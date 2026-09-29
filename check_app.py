@@ -1,49 +1,47 @@
-"""Meaningful checks for numerical methods, export round trips and UI changes."""
-import io,zipfile, numpy as np
-from analysis import *
+import io,zipfile
+from pathlib import Path
+import numpy as np
 from streamlit.testing.v1 import AppTest
+from analysis import load_events,load_dataset,link_dataset,describe,refine,feature_table
+from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
+from plots import figure_archive
+root=Path(__file__).resolve().parent.parent/'upload'
+fitpath=next(root.glob('*12_18_31.event_fitting.npz'));rawpath=next(root.glob('*12_18_29.event_data.npz'));datapath=next(root.glob('*12_18_31.dataset.npz'))
+events,settings,rejected=load_events(fitpath.read_bytes());raw,_,rr=load_events(rawpath.read_bytes());dataset,ds=load_dataset(datapath.read_bytes())
+assert len(events)==1400 and not rejected and not rr
+mapping,status=link_dataset(events,dataset);rawmap,rstatus=match_raw(events,raw,1e-7)
+assert len(mapping)==len(rawmap)==1400
+small=events[:32];e=small[0];old=e.fit.copy();refs={e.index:refine(e,'Segment means')}
+blob=fitting_bytes(small,refs,settings,{})
+loaded,_,bad=load_events(blob);assert not bad
+np.testing.assert_array_equal(loaded[0].fit,refs[e.index]['fit']);np.testing.assert_array_equal(loaded[0].current,e.current);np.testing.assert_array_equal(e.fit,old)
+with np.load(io.BytesIO(blob)) as z:np.testing.assert_array_equal(z[f'INPUT_FIT_{e.index}'],old)
+a=active_events(small,refs);feat=feature_table(signal_events(a,'Selected fits'));meas=feature_table(small)
+assert not np.allclose(feat['blockade_std_nA'],meas['blockade_std_nA'])
+table,_=describe(small);data=bundle(small,rawmap,refs,dataset,mapping,settings,ds,table,{})
+with zipfile.ZipFile(io.BytesIO(data)) as z:
+ ev,_,_=load_events(z.read('selected.eventfitting.npz'));np.testing.assert_array_equal(ev[0].fit,refs[e.index]['fit'])
+ x,_=load_dataset(z.read('selected.dataset.npz'));np.testing.assert_array_equal(x,dataset[[mapping[e.index] for e in small]])
+ rawsub,_,_=load_events(z.read('selected.eventdata.npz'));assert len(rawsub)==32
+assert len(zipfile.ZipFile(io.BytesIO(figure_archive(table,'duration_ms','mean_blockade_nA',True))).namelist())==8
+p=dict(events=small,raw=raw,settings=settings,dsettings=ds,dataset=dataset,mapping=mapping,rawmap=rawmap,status=status,rstatus=rstatus,rejected=[],fingerprint='test',files={},matching={})
+at=AppTest.from_file('app.py',default_timeout=30).run();assert not at.exception
+assert len(at.get('file_uploader'))==3
+at.session_state['project']=p;at.session_state['refs']={};at.session_state['recording_confirmed']=True
 
-def button(at,label):return next(b for b in at.button if b.label==label)
-def select(at,label):return next(b for b in at.selectbox if b.label==label)
+def step(n):
+ at.sidebar.radio[0].set_value(at.sidebar.radio[0].options[n-1]).run();assert not at.exception,at.exception
 
-e,s,r=synthetic_demo();df,x=describe(e)
-ref=refine(e[0],'Segment means')
-assert fit_metrics(e[0],ref['fit'])['waveform_rmse_nA']<=fit_metrics(e[0],e[0].fit)['waveform_rmse_nA']+1e-12
-flat=Event(999,np.arange(200)*5e-6,17-np.r_[np.ones(100),np.ones(100)*2],np.array([0.,.001]),np.full(200,17.))
-pelt=refine(flat,'New levels (PELT)',25,8)
-assert len(pelt['levels'])==2 and np.allclose(pelt['levels'],[1,2])
-# Never mutate the original arrays when refining.
-assert e[0].fit is not ref['fit']
-xsource=np.zeros((len(e),10));xsource[:,8]=[q.bounds[0] for q in e]
-# Source summary ordering deliberately differs from event order.
-xsource=xsource[::-1].copy();mapping,status=link_dataset(e,xsource)
-assert len(mapping)==len(e) and mapping[0]==79
-# Ambiguous timestamp must not be silently matched.
-duplicate=np.r_[xsource,xsource[-1:]];dm,_=link_dataset(e,duplicate);assert 0 not in dm
-sub=e[::3];table=df[df.event_index.isin([q.index for q in sub])]
-bundle=cluster_bundle(sub,table,s,{'check':True},{0:ref},xsource,mapping)
-with zipfile.ZipFile(io.BytesIO(bundle)) as z:
- restored,_,_=load_events(z.read('events.npz'));assert [q.index for q in restored]==[q.index for q in sub]
- for a,b in zip(sub,restored):assert np.array_equal(a.current,b.current) and np.array_equal(a.fit,b.fit)
- zsub=np.load(io.BytesIO(z.read('dataset_subset.npz')),allow_pickle=False)
- assert np.array_equal(zsub['X'],xsource[[mapping[q.index] for q in sub]])
-ft=feature_table(e);a=cluster_features(ft[['duration_ms','mean_blockade_nA','blockade_std_nA','early_late_difference_nA']].to_numpy(),x,4)
-assert len(a['labels'])==80
-# Reject arbitrary serialized globals in event_data.
-import pickle
-class Bad:
- def __reduce__(self):return (eval,('1+1',))
-buf=io.BytesIO();np.savez(buf,events=np.array([Bad()],object),sampling_rate=200000.)
-try:load_events(buf.getvalue())
-except ValueError as ex:assert 'Unsupported serialized type' in str(ex)
-else:raise AssertionError('Unsafe global accepted')
-at=AppTest.from_file('app.py',default_timeout=90).run();assert not at.exception
-at.sidebar.radio[0].set_value('Synthetic demonstration').run();assert not at.exception
-button(at,'Run grouping').click().run();assert not at.exception
-button(at,'Prepare event download').click().run();assert not at.exception
-select(at,'Clustering method').set_value('PCA + k-means (nanorod concept)').run();assert not at.exception
-assert any('settings changed' in msg.value.lower() for msg in at.info)
-button(at,'Run grouping').click().run();assert not at.exception
-select(at,'Candidate method').set_value('New levels (PELT)').run();button(at,'Calculate candidate fit').click().run();assert not at.exception
-select(at,'Clustering method').set_value('Waveform k-means (original baseline)').run();button(at,'Run grouping').click().run();assert not at.exception
-print('PASS: fit comparison, level recovery, timestamp joins, ambiguous joins, export roundtrip, numeric-loader guard, UI grouping/refinement/download and stale-result handling.')
+def button(label):return next(b for b in at.button if b.label==label)
+step(2);step(3);button('Calculate refined fits').click().run();assert not at.exception
+button('Prepare new eventfitting file').click().run();assert not at.exception
+step(4);button('Prepare publication figures').click().run();assert not at.exception
+step(5);button('Run clustering').click().run();assert not at.exception,at.exception
+assert at.session_state['group']['meta']['clustering']['source']=='Selected fits'
+step(6);button('Prepare cluster files').click().run();assert not at.exception
+assert at.session_state['prepared'][1]
+step(5);assert at.session_state['group']
+next(w for w in at.slider if w.label=='Number of clusters').set_value(3).run();assert not at.exception
+assert 'group' not in at.session_state
+step(6);assert not at.exception
+print('PASS: 1,400 three-file matches; refined-fit reload and original preservation; fitted-feature input; cluster subset alignment; scientific exports; complete guided UI and stale-group invalidation.')

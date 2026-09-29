@@ -1,294 +1,194 @@
-import io,hashlib,json,zipfile
+import hashlib,io,json,zipfile
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
-from analysis import (VERSION,load_events,load_dataset,inventory,link_dataset,describe,profile,refine,
-    fit_metrics,cluster_profiles,cluster_features,cluster_dtw,feature_table,FEATURE_DESCRIPTIONS,cluster_bundle,npz_bytes,synthetic_demo,safe_settings)
-from plots import trace_figure,distribution_figures,profile_figure,LABELS
+from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,feature_table,cluster_features,cluster_profiles,cluster_dtw,FEATURE_DESCRIPTIONS,safe_settings
+from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
+from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive
 
-st.set_page_config(page_title='Nanopore Shape Lab',page_icon='🧬',layout='wide')
-st.title('Nanopore Shape Lab')
-st.caption(f'v{VERSION} · Inspect signals → compare fits → explore groups → export events')
-st.info('Shape groups are exploratory. They do not automatically identify unfolded, folded or knotted DNA. Use one recording condition at a time.')
-source=st.sidebar.radio('Data source',['Upload files','Synthetic demonstration'])
-wave_upload=data_upload=None;events=[];settings={};rejected=[];dataset=None;dsettings={};mapping={};join_table=None
-if source=='Upload files':
-    wave_upload=st.sidebar.file_uploader('Waveforms: event_fitting.npz or eventdata.npz',type='npz',key='wave')
-    data_upload=st.sidebar.file_uploader('Optional summary: dataset.npz',type='npz',key='data')
-    if wave_upload is None and data_upload is None:
-        st.markdown('Upload your full waveform export to inspect, refine and cluster events. Add its dataset file to preserve source summary rows in cluster downloads. A dataset alone supports distribution plots. The synthetic demonstration is available in the sidebar.')
-        st.stop()
-    blobs={name:u.getvalue() for name,u in [('wave',wave_upload),('data',data_upload)] if u is not None}
-    fingerprint=hashlib.sha256(b''.join(name.encode()+hashlib.sha256(blob).digest() for name,blob in sorted(blobs.items()))).hexdigest()
-    if st.session_state.get('loaded_key')!=fingerprint:
-        payload={'errors':[]}
-        for name,fn in [('wave',load_events),('data',load_dataset)]:
-            if name in blobs:
-                try:payload[name]=fn(blobs[name])
-                except Exception as ex:payload['errors'].append(f'{name}: {ex}')
-        st.session_state.loaded=payload;st.session_state.loaded_key=fingerprint
-    loaded=st.session_state.loaded
-    if 'wave' in loaded:events,settings,rejected=loaded['wave']
-    if 'data' in loaded:dataset,dsettings=loaded['data']
-    for msg in loaded['errors']:st.error(msg)
-    with st.expander('File structure inspector'):
-        for name,blob in blobs.items():
-            try:rows,n=inventory(blob);st.write(f'{name}: {n} arrays (first 60 below)');st.dataframe(pd.DataFrame(rows),hide_index=True)
-            except Exception as ex:st.warning(str(ex))
-    if not events and dataset is None:st.stop()
-else:
-    fingerprint='synthetic-v2';events,settings,rejected=synthetic_demo();blobs={}
-if st.session_state.get('active_source')!=fingerprint:
-    for key in ['refinements','group_result','prepared_download','previous_groups','fit_errors']:st.session_state.pop(key,None)
-    st.session_state.active_source=fingerprint
-st.session_state.setdefault('refinements',{})
-refs=st.session_state.refinements
-bins=st.sidebar.select_slider('Profile positions',[16,32,64,128],value=32)
-if wave_upload and 'SHORT' in wave_upload.name.upper():st.warning('Selected/subset export: population fractions describe only uploaded events.')
-if rejected:st.warning(f'{len(rejected)} malformed events omitted; details in the audit tab.')
+st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
+st.title('DNA Event Lab')
+st.caption('Load → inspect → refine → plot → cluster → save')
+st.sidebar.title('Your analysis')
+step=st.sidebar.radio('Step',['1 · Load files','2 · Inspect events','3 · Refine and save fits','4 · Current–duration plots','5 · Cluster events','6 · Save clusters'])
+st.sidebar.caption('Work with one recording at a time. Groups describe signal similarities; topology labels need physical validation.')
+S=st.session_state
 
-start_col=8;duration_col=4;height_col=0;tolerance=1e-7
-if dataset is not None:
-    with st.expander('Dataset column mapping and timestamp matching',expanded=not bool(events)):
-        st.caption('Defaults match the supplied NanoSense X table. Column numbers are zero-based. Verify units and mappings before interpreting summary-only plots. No matching by row order.')
-        c1,c2,c3,c4=st.columns(4)
-        start_col=c1.number_input('Start time column (seconds)',0,dataset.shape[1]-1,min(8,dataset.shape[1]-1))
-        duration_col=c2.number_input('Duration column (seconds)',0,dataset.shape[1]-1,min(4,dataset.shape[1]-1))
-        height_col=c3.number_input('Height column (nA)',0,dataset.shape[1]-1,0)
-        tolerance=c4.number_input('Timestamp tolerance (µs)',min_value=.001,max_value=1000.,value=.1,format='%.3f')*1e-6
-        if events:
-            mapping,join_table=link_dataset(events,dataset,int(start_col),tolerance)
-            st.write(f'{len(mapping)}/{len(events)} waveform events uniquely matched; {len(dataset)-len(mapping)} summary rows not linked.')
-            st.dataframe(join_table,hide_index=True)
-            if len(mapping)!=len(events):st.warning('Unmatched waveform events remain in the analysis. Their downloads will not contain an invented summary row.')
-            if settings.get('file_name') and dsettings.get('file_name') and settings['file_name']!=dsettings['file_name']:
-                st.warning('The two files name different acquisition sources. Confirm they belong together; timestamp matches alone are insufficient.')
-        else:st.warning('Summary-only mode: no waveforms, fit refinement, shape clustering  are available.')
-if events:df,raw_profiles=describe(events,bins,refs)
-else:
-    df=pd.DataFrame({'dataset_row':np.arange(len(dataset)),'start_s':dataset[:,int(start_col)],'duration_ms':dataset[:,int(duration_col)]*1000,'export_height_nA':dataset[:,int(height_col)]})
-if dataset is not None and events:
-    df['dataset_row']=[mapping.get(int(i),np.nan) for i in df.event_index]
-    for col in range(dataset.shape[1]):df[f'export_col_{col}']=[dataset[mapping[int(i)],col] if int(i) in mapping else np.nan for i in df.event_index]
-c1,c2,c3=st.columns(3);c1.metric('Waveform events',len(events));c2.metric('Summary rows',len(dataset) if dataset is not None else '—');c3.metric('Candidate fits',len(refs))
-with st.expander('Recording metadata and assumptions'):
-    st.json(safe_settings(settings or dsettings));st.caption('Time is assumed seconds; current is assumed nA. Original arrays are retained. A missing baseline is estimated from padding and marked in the results. ')
-    if events:st.caption(f'Median saved sample spacing: {df.time_step_us.median():.6g} µs. Saved metadata sampling rate: {settings.get("sampling_rate","not provided")} Hz.')
+def show(fig,key):
+    st.plotly_chart(scientific(fig),width='stretch',key=key,config={'displaylogo':False,'toImageButtonOptions':{'format':'svg','filename':key,'width':900,'height':600}})
 
-inspect,audit,fit_tab,group_tab,dist_tab,export_tab=st.tabs(['1 · Inspect','2 · Waveform disagreement','3 · Refine fits','4 · Cluster','5 · Distributions','6 · Download'])
-with inspect:
-    if events:
-        selected=st.selectbox('Event index',[e.index for e in events]);event=next(e for e in events if e.index==selected)
-        zoom=st.checkbox('Zoom to event',True)
-        st.caption(f'Start {event.bounds[0]:.9f} s · baseline: {event.baseline_source}. IDs are local to the source export; subset exports may renumber them.')
-        st.plotly_chart(trace_figure(event,refs.get(event.index),zoom),width='stretch',key='inspect_trace')
-        if event.levels is not None and event.widths is not None and len(event.levels)==len(event.widths):
-            st.dataframe(pd.DataFrame({'saved_level_nA':event.levels,'saved_duration_ms':event.widths*1000}),hide_index=True)
-        st.caption('Saved segment count is not the number of DNA sections in the pore.')
-    else:st.info('Upload a waveform file to inspect individual events.')
-with audit:
-    st.markdown('A rectangular fit can capture peak height and duration while disagreeing with a rounded waveform. **RMSE measures pointwise disagreement inside the event—not event validity or physical fit quality.** No RMSE exclusion is enabled by default.')
-    if events:
-        y=st.selectbox('Diagnostic metric',['waveform_rmse_nA','relative_rmse','peak_error_nA','area_error_pct'],format_func=lambda v:LABELS[v])
-        st.plotly_chart(px.scatter(df,x='duration_ms',y=y,color='segments',log_x=True,hover_data=['event_index','start_s'],labels=LABELS),width='stretch')
-        st.caption('Relative RMSE divides by the measured signal RMS. Peak error and area error are signed. More step parameters can reduce RMSE without improving the physical model.')
-        st.dataframe(df,hide_index=True)
-        if rejected:st.dataframe(pd.DataFrame(rejected),hide_index=True)
-    else:st.info('Waveforms and saved fits are needed for this diagnostic.')
-with fit_tab:
-    st.markdown('Compare candidate representations with the original. Refinement does not recover details lost to bandwidth, and more fitted levels do not establish more DNA folds.')
-    if events:
-        method=st.selectbox('Candidate method',['Segment means','New levels (PELT)','Rounded pulse (Gaussian)'])
-        explanations={'Segment means':'Keep the existing step boundaries and recalculate each height as the mean observed blockade. This optimises squared error for those boundaries; it may lower peak estimates.',
-            'New levels (PELT)':'Find new step boundaries with a penalty for extra segments and a minimum segment duration. Correlated noise and rounded edges can still create spurious steps.',
-            'Rounded pulse (Gaussian)':'Fit one smooth bell-shaped pulse. Useful as a descriptive comparison for single rounded events; it is not an instrument-response correction or a model of multiple occupancy.'}
-        st.write(explanations[method]);c1,c2=st.columns(2)
-        minimum=c1.number_input('Minimum step duration (µs; PELT)',5.,10000.,25.,step=5.)
-        penalty=c2.number_input('Extra-segment penalty multiplier (PELT)',.1,100.,8.,step=.5)
-        scope=st.radio('Apply candidate to',['Selected event','All loaded events'],horizontal=True)
-        st.caption(f'Selected event: {selected}. Original baselines and event boundaries are held fixed. Up to 6,000 event samples per event are supported for refinement.')
-        if st.button('Calculate candidate fit',type='primary'):
-            targets=events if scope=='All loaded events' else [event];errors=[];bar=st.progress(0.)
-            for j,e in enumerate(targets):
-                try:refs[e.index]=refine(e,method,minimum,penalty)
-                except Exception as ex:errors.append({'event_index':e.index,'reason':str(ex)})
-                bar.progress((j+1)/len(targets))
-            st.session_state.refinements=refs;st.session_state.pop('group_result',None);st.session_state.pop('prepared_download',None)
-            st.session_state.fit_errors=errors;st.rerun()
-        if st.button('Clear all candidate fits'):
-            st.session_state.refinements={};st.session_state.pop('group_result',None);st.session_state.pop('prepared_download',None);st.rerun()
-        if st.session_state.get('fit_errors'):st.dataframe(pd.DataFrame(st.session_state.fit_errors),hide_index=True)
-        if event.index in refs:
-            ref=refs[event.index];st.plotly_chart(trace_figure(event,ref),width='stretch',key='candidate_trace')
-            compare=pd.DataFrame([fit_metrics(event,event.fit),fit_metrics(event,ref['fit'])],index=['Original','Candidate']);st.dataframe(compare)
-            st.write('Candidate parameters:',ref['parameters'])
-            if len(ref['levels']):st.dataframe(pd.DataFrame({'candidate_level_nA':ref['levels'],'candidate_duration_ms':ref['widths']*1000}),hide_index=True)
-    else:st.info('Upload waveforms to calculate candidate fits.')
+def next_step(label):st.info('Next: select '+label+' in the left-hand menu.')
 
-result=df.copy();valid_groups=False;group_info=None;signature=None
-with group_tab:
-    if events:
-        st.markdown('Compare unsupervised methods inspired by NanoBoost (2026). These are adaptations for your DNA exports, not an exact reproduction of its preprocessing or feature set. No method is assumed superior.')
-        algorithm=st.selectbox('Clustering method',['PCA + agglomerative (DNA concept)','PCA + k-means (nanorod concept)','Waveform k-means (original baseline)','Time-series k-means (DTW)'])
-        feature_mode=algorithm.startswith('PCA')
-        features=feature_table(events)
-        default_features=['duration_ms','mean_blockade_nA','peak_blockade_nA','blockade_std_nA','peak_position','early_late_difference_nA']
-        selected_features=st.multiselect('Features for PCA methods',list(FEATURE_DESCRIPTIONS),default=default_features,disabled=not feature_mode)
-        npc=st.slider('Retained PCA components',1,6,2,disabled=not feature_mode)
-        radius=st.slider('DTW alignment radius (profile positions)',1,16,4,disabled=algorithm!='Time-series k-means (DTW)')
-        with st.expander('What each method compares'):
-            st.write('PCA methods: min–max scaled event features → PCA → clustering. Ward linkage is used for the agglomerative option; this choice still has geometric assumptions. Optional Haar coefficient features are available, with no denoising. These are not the paper’s complete 25-feature pipeline.')
-            st.write('Waveform baseline: point-by-point Euclidean distance after duration normalisation. DTW: locally align waveform features, with a limited warping window. This may reduce timing sensitivity but can hide physically meaningful differences in fold duration. DTW is limited to 2,000 events and 64 positions.')
-            st.dataframe(pd.DataFrame({'feature':list(FEATURE_DESCRIPTIONS),'definition':list(FEATURE_DESCRIPTIONS.values())}),hide_index=True)
-        c1,c2=st.columns(2);representation=c1.selectbox('Signal for grouping',['Saved trace','Original fit','Candidate fit'],disabled=feature_mode)
-        shape_only=c2.checkbox('Shape only: normalise each event amplitude',False,disabled=feature_mode)
-        if shape_only and not feature_mode:st.warning('Amplitude normalisation removes absolute blockade differences. Constant single- and double-occupancy signals may then look identical. Compare with depth-preserving mode.')
-        c1,c2,c3=st.columns(3);k=c1.slider('Number of groups',2,10,4);min_samples=c2.number_input('Minimum event samples',3,1000,3)
-        gate=c3.checkbox('Exclude by original waveform RMSE',False)
-        cutoff=st.number_input('Original waveform RMSE limit (nA)',.01,100.,10.,step=.1,disabled=not gate)
-        effective_representation='Saved trace' if feature_mode else representation
-        all_profiles=raw_profiles.copy();available=np.ones(len(events),bool)
-        for pos,e in enumerate(events):
-            if effective_representation=='Original fit':
-                available[pos]=e.fit is not None
-                if available[pos]:all_profiles[pos]=profile(e,bins,e.fit)
-            elif effective_representation=='Candidate fit':
-                available[pos]=e.index in refs
-                if available[pos]:all_profiles[pos]=profile(e,bins,refs[e.index]['fit'])
-        eligible=(df.samples.to_numpy()>=min_samples)&available
-        if gate:eligible&=(df.waveform_rmse_nA.to_numpy()<=cutoff)
-        ref_signature=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-        signature=(fingerprint,bins,k,min_samples,gate,cutoff,representation,shape_only,ref_signature,start_col,tolerance,algorithm,tuple(selected_features),npc,radius)
-        st.write(f'{eligible.sum()} eligible / {len(events)} loaded; {(~eligible).sum()} excluded by availability or selected settings.')
-        st.caption('PCA uses the selected features, including duration if selected. Waveform methods remove absolute duration. Choosing k groups does not establish k physical configurations.')
-        if st.button('Compare group counts 2–8',disabled=algorithm=='Time-series k-means (DTW)'):
-            comparison=[]
-            with st.spinner('Exploring k values in the selected space…'):
-                for trial_k in range(2,min(8,int(eligible.sum())-1)+1):
-                    try:
-                        if feature_mode:
-                            if len(selected_features)<2:raise ValueError('Choose at least two features.')
-                            trial=cluster_features(features.loc[eligible,selected_features].to_numpy(),all_profiles[eligible],trial_k,npc,algorithm)
-                        else:trial=cluster_profiles(all_profiles[eligible],trial_k,shape_only)
-                        comparison.append({'k':trial_k,'silhouette':trial['silhouette'],'within_group_sum_squares':trial.get('dispersion',np.nan)})
-                    except ValueError:continue
-            if comparison:
-                comp=pd.DataFrame(comparison);st.dataframe(comp);st.plotly_chart(px.line(comp,x='k',y='silhouette',markers=True),width='stretch')
-                if feature_mode:st.plotly_chart(px.line(comp,x='k',y='within_group_sum_squares',markers=True),width='stretch')
-                st.caption('Use separation and diminishing within-group error as exploration aids; no automatic topology count is selected.')
-                st.download_button('Download k comparison',comp.to_csv(index=False),'k_comparison.csv','text/csv')
-            else:st.warning('Not enough valid distinct events/features for this comparison.')
-        if st.button('Run grouping',type='primary'):
-            try:
-                with st.spinner('Comparing events; first DTW use may compile numerical routines…'):
-                    if feature_mode:
-                        if len(selected_features)<2:raise ValueError('Choose at least two features.')
-                        info=cluster_features(features.loc[eligible,selected_features].to_numpy(),all_profiles[eligible],k,npc,algorithm)
-                    elif algorithm=='Time-series k-means (DTW)':info=cluster_dtw(all_profiles[eligible],k,shape_only,radius)
-                    else:info=cluster_profiles(all_profiles[eligible],k,shape_only)
-                previous=st.session_state.get('group_result')
-                if previous and previous.get('source')==fingerprint:
-                    st.session_state.previous_groups=previous['table'][['event_index','group']].copy()
-                assigned=df.copy();assigned['group']=-1;assigned.loc[eligible,'group']=info['labels'];assigned['exclusion_reason']=''
-                assigned.loc[~available,'exclusion_reason']='selected signal unavailable'
-                assigned.loc[df.samples<min_samples,'exclusion_reason']+='; below minimum sample count'
-                if gate:assigned.loc[~(df.waveform_rmse_nA<=cutoff),'exclusion_reason']+='; original RMSE missing/above threshold'
-                st.session_state.group_result={'signature':signature,'table':assigned,'info':info,'eligible':eligible,'source':fingerprint}
-                st.session_state.pop('prepared_download',None)
-            except Exception as ex:st.error(str(ex))
-        stored=st.session_state.get('group_result');valid_groups=stored is not None and stored['signature']==signature
-        if valid_groups:
-            result=stored['table'];group_info=stored['info'];eligible=stored['eligible'];info=group_info
-            st.write(f"Silhouette: {info['silhouette']:.3f}")
-            if np.isfinite(info['ari']):st.write(f"Two-initialisation ARI: {info['ari']:.3f}")
-            st.caption(info.get('metric','Euclidean profile distance') + '. Silhouettes in different spaces are not directly comparable evidence of physical superiority.')
-            if 'scree' in info:
-                st.plotly_chart(px.bar(x=np.arange(1,len(info['scree'])+1),y=info['scree'],labels={'x':'Principal component','y':'Explained variance fraction'}),width='stretch')
-                st.dataframe(pd.DataFrame(info['loadings'],columns=selected_features,index=[f'PC{i+1}' for i in range(len(info['loadings']))]))
-            if 'center_note' in info:st.caption(info['center_note'])
-            previous=st.session_state.get('previous_groups')
-            if previous is not None:
-                joined=result[['event_index','group']].merge(previous,on='event_index',suffixes=('_current','_previous'))
-                joined=joined[(joined.group_current>=0)&(joined.group_previous>=0)]
-                if len(joined)>1:
-                    from sklearn.metrics import adjusted_rand_score
-                    st.write(f'Agreement with previous run on {len(joined)} shared clustered events: ARI {adjusted_rand_score(joined.group_previous,joined.group_current):.3f}')
-                    st.dataframe(pd.crosstab(joined.group_previous,joined.group_current))
-            st.caption('Geometric separation and limited numerical stability; neither is physical validation. Bands below show the 10th–90th percentile of individual profiles, not confidence intervals.')
-            st.plotly_chart(profile_figure(info['profiles'],info['labels'],info['centers'],'relative amplitude' if shape_only and not feature_mode else 'nA'),width='stretch')
-            counts=result.group.value_counts().sort_index().rename('events').to_frame();counts['fraction_all_loaded']=counts.events/len(result)
-            counts['fraction_clustered']=np.where(counts.index>=0,counts.events/max(1,eligible.sum()),np.nan);st.dataframe(counts)
-            emb=pd.DataFrame(info['embedding'],columns=['PC1','PC2']);emb['group']=info['labels'].astype(str);emb['event_index']=df.loc[eligible,'event_index'].to_numpy()
-            st.plotly_chart(px.scatter(emb,x='PC1',y='PC2',color='group',hover_data=['event_index'],opacity=.7),width='stretch')
-            st.caption(f"First two PCA coordinates shown; additional retained components may also drive feature clustering. For waveform methods PCA is only a visual projection. First-two-component variance: {100*sum(info['pca_variance']):.1f}%.")
-            order=np.argsort(info['labels'],kind='stable');heat=go.Figure(go.Heatmap(z=info['profiles'][order],x=(np.arange(bins)+.5)/bins,y=np.arange(len(order)),colorscale='Viridis',colorbar=dict(title='Relative' if shape_only and not feature_mode else 'nA')))
-            heat.update_layout(xaxis_title='Fraction of event duration',yaxis_title='Event row, ordered by group');st.plotly_chart(heat,width='stretch')
-            gid=st.selectbox('Inspect group',range(k));local=np.flatnonzero(info['labels']==gid);global_positions=np.flatnonzero(eligible)
-            nearest=local[np.argsort(np.linalg.norm(info['profiles'][local]-info['centers'][gid],axis=1))[:3]]
-            random=np.random.default_rng(42).choice(local,min(3,len(local)),replace=False)
-            st.caption('Up to three waveforms nearest to the displayed profile by pointwise distance, plus three random members; duplicates shown once. This example ranking is separate from the clustering distance.')
-            for pos in dict.fromkeys(np.r_[nearest,random].tolist()):
-                e=events[global_positions[pos]];st.write(f'Event {e.index}');st.plotly_chart(trace_figure(e,refs.get(e.index)),width='stretch',key=f'group_event_{e.index}')
-        elif stored:st.info('Analysis settings changed. Run grouping again before using or exporting group assignments.')
-    else:st.info('Shape clustering needs the waveform export; summary-only data can be plotted in Distributions.')
+if step.startswith('1'):
+    st.header('1 · Load the three files')
+    st.write('Choose the dataset, recorded events and fitted events from the same recording. Both eventdata and event_data naming styles are accepted.')
+    uploads={}
+    for key,label in [('dataset','Summary · .dataset.npz'),('raw','Recorded events · .eventdata.npz / .event_data.npz'),('fits','Fitted events · .eventfitting.npz / .event_fitting.npz')]:
+        uploads[key]=st.file_uploader(label,type='npz',key='upload_'+key)
+    with st.expander('Advanced: event matching'):
+        col=st.number_input('Dataset start-time column (zero-based)',0,100,8)
+        tol=st.number_input('Start-time tolerance (µs)',.001,1000.,.1,format='%.3f')*1e-6
+        st.caption('Events are linked by unique start times, never by row position. Current units must be nA and time units seconds.')
+    if st.button('Load and check files',type='primary',disabled=not all(u is not None for u in uploads.values())):
+        try:
+            blobs={k:u.getvalue() for k,u in uploads.items()}
+            events,settings,rejected=load_events(blobs['fits']);raw,rsettings,rreject=load_events(blobs['raw']);dataset,dsettings=load_dataset(blobs['dataset'])
+            mapping,status=link_dataset(events,dataset,col,tol);rawmap,rstatus=match_raw(events,raw,tol)
+            fingerprint=hashlib.sha256(b''.join(hashlib.sha256(blobs[k]).digest() for k in sorted(blobs))).hexdigest()
+            for key in ['refs','group','prepared','fitfile','fit_errors','recording_confirmed']:S.pop(key,None)
+            S.project=dict(events=events,raw=raw,settings=settings,dsettings=dsettings,dataset=dataset,mapping=mapping,rawmap=rawmap,status=status,rstatus=rstatus,rejected=rejected+rreject,
+                fingerprint=fingerprint,files={k:{'name':u.name,'sha256':hashlib.sha256(blobs[k]).hexdigest()} for k,u in uploads.items()},matching={'start_column':col,'tolerance_s':tol})
+            S.refs={};st.success('Files read successfully. Review the matches below.')
+        except Exception as ex:st.error(str(ex))
+    if 'project' in S:
+        p=S.project;c=st.columns(3);c[0].metric('Fitted events',len(p['events']));c[1].metric('Matched recorded events',len(p['rawmap']));c[2].metric('Matched dataset rows',len(p['mapping']))
+        st.caption('Loaded: '+' · '.join(v['name'] for v in p['files'].values()))
+        if len(p['rawmap'])!=len(p['events']) or len(p['mapping'])!=len(p['events']):st.warning('Some events could not be uniquely matched. They remain visible; cluster downloads include only their available linked data.')
+        with st.expander('Matching details and rejected events'):
+            st.dataframe(p['status'],hide_index=True);st.dataframe(p['rstatus'],hide_index=True);st.write(p['rejected'])
+        S.recording_confirmed=st.checkbox('I checked that these three files belong to the same recording.',value=S.get('recording_confirmed',False),key='confirmation_widget')
+        next_step('2 · Inspect events')
+    st.stop()
+if 'project' not in S:st.info('Start at 1 · Load files.');st.stop()
+if not S.get('recording_confirmed'):st.info('Confirm the recording match in 1 · Load files before continuing.');st.stop()
+p=S.project;events=p['events'];refs=S.setdefault('refs',{});active=active_events(events,refs)
+measured,profiles=describe(events,32,refs)
+measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'] else np.nan for e in events]
+measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
+measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
+refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
+meta={'version':'0.3.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+      'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},'fit_hash':refhash}
+st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
+st.sidebar.caption('Unrefined events retain their uploaded fits.')
 
-with dist_tab:
-    st.markdown('These plots show event measurements in physical units. Histogram colours count events, while cluster colours show assignments when current results exist.')
-    choices=[c for c in ['duration_ms','mean_blockade_nA','peak_blockade_nA','ecd_nA_ms','waveform_rmse_nA','segments','export_height_nA'] if c in result]
-    c1,c2=st.columns(2);x=c1.selectbox('Horizontal variable',choices,format_func=lambda v:LABELS.get(v,v));y=c2.selectbox('Vertical variable',choices,index=min(1,len(choices)-1),format_func=lambda v:LABELS.get(v,v))
-    c1,c2,c3=st.columns(3);logx=c1.checkbox('Log horizontal axis',True);logy=c2.checkbox('Log vertical axis',False);nbins=c3.slider('Histogram bins per axis',15,100,45)
-    selection='All loaded events'
-    if valid_groups:selection=st.selectbox('Population',['All loaded events','Clustered events','Excluded events']+[f'Group {i}' for i in range(k)])
-    view=result
-    if valid_groups:
-        if selection=='Clustered events':view=result[result.group>=0]
-        elif selection=='Excluded events':view=result[result.group<0]
-        elif selection.startswith('Group '):view=result[result.group==int(selection.split()[-1])]
-    try:
-        scatter,heat,dropped,h,xe,ye=distribution_figures(view,x,y,logx,logy,nbins,'group' if valid_groups else None)
-        st.plotly_chart(scatter,width='stretch');st.plotly_chart(heat,width='stretch')
-        st.caption(f'{len(view)-dropped} displayed; {dropped} nonfinite/nonpositive-on-log-axis points omitted. Heatmap shows counts per bin, not probability density. Log axes use logarithmically spaced bins. Group -1 denotes excluded events.')
-        hist=go.Figure()
-        hist.add_trace(go.Bar(x=np.sqrt(xe[:-1]*xe[1:]) if logx else (xe[:-1]+xe[1:])/2,y=h.sum(axis=1),width=np.diff(xe)))
-        hist.update_layout(xaxis_title=LABELS.get(x,x),yaxis_title='Event count');hist.update_xaxes(type='log' if logx else 'linear');st.plotly_chart(hist,width='stretch')
-        st.download_button('Download plotted event table',view.to_csv(index=False),'distribution_events.csv','text/csv')
-        st.download_button('Download heatmap counts and bin edges',npz_bytes({'counts':h,'x_edges':xe,'y_edges':ye,'x_variable':np.array(x),'y_variable':np.array(y)}),'density_histogram.npz')
-    except ValueError as ex:st.info(str(ex))
+def choose_event():
+    idx=st.selectbox('Event ID',[e.index for e in events],key='event_choice');return next(e for e in events if e.index==idx)
 
-with export_tab:
-    provenance={'version':VERSION,'source_hash':fingerprint,'files':{name:{'filename':u.name,'sha256':hashlib.sha256(u.getvalue()).hexdigest()} for name,u in [('wave',wave_upload),('data',data_upload)] if u},
-        'recording_settings':safe_settings(settings),'dataset_settings':safe_settings(dsettings),'profile_positions':bins,'grouping_current':valid_groups,
-        'method':algorithm if events else 'summary-only','interpretation':'Exploratory signal groups, not molecular topology labels',
-        'dataset_matching':{'start_column':int(start_col),'tolerance_seconds':tolerance,'matched_events':len(mapping)},
-        'dataset_plot_columns':{'duration_seconds':int(duration_col),'height_nA':int(height_col)},'rejected':rejected,
-        'candidate_fits':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()}}
-    if events:provenance['grouping_settings']={'groups':k,'min_samples':min_samples,'rmse_exclusion_enabled':gate,'rmse_limit_nA':cutoff if gate else None,'representation':effective_representation,'shape_only':shape_only and not feature_mode,'selected_features':selected_features if feature_mode else [],'pca_components':npc if feature_mode else None,'dtw_radius':radius if algorithm=='Time-series k-means (DTW)' else None}
-    if valid_groups:provenance['group_diagnostics']={'silhouette':group_info['silhouette'],'two_seed_ari':group_info['ari']}
-    st.download_button('Download complete results CSV',result.to_csv(index=False),'event_results.csv','text/csv')
-    st.download_button('Download provenance JSON',json.dumps(provenance,indent=2),'analysis_settings.json','application/json')
-    if events:
-        options=['All loaded events']+([f'Group {j}' for j in range(k)]+['Excluded events','All groups as separate ZIPs'] if valid_groups else [])
-        scope=st.selectbox('Event files to download',options)
-        export_key=hashlib.sha256((json.dumps(provenance,sort_keys=True)+scope).encode()).hexdigest()
-        if st.button('Prepare event download'):
-            with st.spinner('Packing original waveforms, candidate fits and matched summary rows…'):
-                def bundle(label,subset):
-                    ids=set(subset.event_index.astype(int));ev=[e for e in events if e.index in ids];meta={**provenance,'export_population':label,'exported_event_count':len(ev),'loaded_event_count':len(events)}
-                    return cluster_bundle(ev,subset,settings,meta,refs,dataset,mapping,dsettings)
-                if scope=='All groups as separate ZIPs':
-                    buf=io.BytesIO()
-                    with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as z:
-                        for j in sorted(result.group.unique()):
-                            name=f'group_{j}' if j>=0 else 'excluded';z.writestr(name+'.zip',bundle(name,result[result.group==j]))
-                    data=buf.getvalue();name='all_cluster_files.zip'
-                else:
-                    subset=result
-                    if scope.startswith('Group '):subset=result[result.group==int(scope.split()[-1])]
-                    elif scope=='Excluded events':subset=result[result.group<0]
-                    data=bundle(scope,subset);name=scope.lower().replace(' ','_')+'.zip'
-                st.session_state.prepared_download=(export_key,data,name)
-        prepared=st.session_state.get('prepared_download')
-        if prepared and prepared[0]==export_key:st.download_button('Download event files ZIP',prepared[1],prepared[2],'application/zip')
-        st.caption('ZIP includes events.npz, results CSV and provenance. If a dataset is linked, dataset_subset.npz preserves its matched X rows. Original fits are unchanged; candidates use separate REFINED_* arrays. IDs are preserved. These NPZs reload in this app; external NanoSense import compatibility is not established.')
+if step.startswith('2'):
+    st.header('2 · Inspect the recorded events')
+    e=choose_event();units=st.radio('Vertical axis',['Current I (nA)','Blockade ΔI (nA)'],horizontal=True)
+    show(trace_figure(e,refs.get(e.index),current=units.startswith('Current')),'inspection')
+    st.caption('Blue: measured trace saved with the fitting file. Orange: uploaded fit. Purple: refined fit, when available. Dashed lines mark the detected event boundaries.')
+    if e.index in p['rawmap']:
+        with st.expander('Compare the independently saved eventdata trace'):
+            show(trace_figure(p['rawmap'][e.index],current=units.startswith('Current')),'recorded_event')
+            st.caption('This is the matched event from eventdata; it is not silently substituted for the trace used by the original fitter.')
+    st.dataframe(measured[measured.event_index==e.index],hide_index=True)
+    with st.expander('Fit disagreement across the recording'):
+        st.write('RMSE measures pointwise disagreement, not whether an event is physically valid. No events are excluded by RMSE.')
+        show(px.scatter(measured,x='duration_ms',y='waveform_rmse_nA',labels=LABELS,hover_data=['event_index']),'fit_disagreement')
+    next_step('3 · Refine and save fits')
+elif step.startswith('3'):
+    st.header('3 · Refine and save fits')
+    st.write('Try one event first. Review its fit before applying the method to all events. Uploaded files are never overwritten.')
+    e=choose_event();method=st.selectbox('Refinement method',['Segment means','New levels (PELT)','Rounded pulse (Gaussian)'])
+    st.caption({'Segment means':'Keep the existing step boundaries and recalculate the level heights.','New levels (PELT)':'Find new step boundaries; the penalty controls how readily another step is added.','Rounded pulse (Gaussian)':'Fit one smooth pulse. Use for single rounded events, not multilevel events.'}[method])
+    with st.expander('Advanced refinement settings',expanded=method=='New levels (PELT)'):
+        minimum=st.number_input('Minimum step duration (µs)',5.,10000.,25.,step=5.,disabled=method!='New levels (PELT)')
+        penalty=st.number_input('Extra-step penalty',.1,100.,8.,step=.5,disabled=method!='New levels (PELT)')
+    scope=st.radio('Refine',['Selected event','All events'],horizontal=True)
+    if st.button('Calculate refined fits',type='primary'):
+        targets=events if scope=='All events' else [e];errors=[];bar=st.progress(0.)
+        for j,item in enumerate(targets):
+            try:refs[item.index]=refine(item,method,minimum,penalty)
+            except Exception as ex:errors.append({'event_id':item.index,'reason':str(ex)})
+            bar.progress((j+1)/len(targets))
+        S.refs=refs;S.fit_errors=errors
+        for key in ['group','prepared','fitfile']:S.pop(key,None)
+        st.rerun()
+    show(trace_figure(e,refs.get(e.index)),'refinement')
+    if e.index in refs:st.dataframe(pd.DataFrame([fit_metrics(e,e.fit),fit_metrics(e,refs[e.index]['fit'])],index=['Uploaded fit','Refined fit']))
+    st.caption('A lower RMSE is not proof of a more accurate physical model. Baseline and event boundaries remain fixed.')
+    if S.get('fit_errors'):st.warning('Some refinements failed; their previous fits remain selected.');st.dataframe(pd.DataFrame(S.fit_errors),hide_index=True)
+    if st.button('Discard all refinements',disabled=not refs):
+        S.refs={}
+        for key in ['group','prepared','fitfile']:S.pop(key,None)
+        st.rerun()
+    if st.button('Prepare new eventfitting file',disabled=not refs):S.fitfile=(refhash,fitting_bytes(events,refs,p['settings'],meta))
+    if S.get('fitfile') and S.fitfile[0]==refhash:st.download_button('Save refined.eventfitting.npz',S.fitfile[1],'refined.eventfitting.npz','application/octet-stream')
+    st.info(f'{len(refs)} refined fits selected; {len(events)-len(refs)} uploaded fits retained. These selected fits are available in the next steps immediately. Saving does not require re-uploading.')
+    next_step('4 · Current–duration plots')
+elif step.startswith('4'):
+    st.header('4 · Current blockade versus event duration')
+    st.write('Each point is one event: duration Δt on the horizontal axis, blockade depth ΔI on the vertical axis. This is a distribution of events, not a frequency spectrum.')
+    source=st.radio('Measurements from',['Measured trace','Selected fits'],horizontal=True)
+    try:plot_events=signal_events(active,source);table,_=describe(plot_events)
+    except ValueError as ex:st.warning(str(ex));st.stop()
+    height=st.selectbox('Blockade measurement',['mean_blockade_nA','peak_blockade_nA'],format_func=lambda x:LABELS[x])
+    logx=st.checkbox('Logarithmic duration axis',True)
+    scatter,heat,dropped,*_=distribution_figures(table,'duration_ms',height,logx,False)
+    show(scatter,'current_duration');show(heat,'event_counts')
+    st.caption(f'{len(table)-dropped} events plotted; {dropped} omitted because values are incompatible with the axes. Colour in the heatmap is events per bin. Data source: {source}.')
+    st.download_button('Save plotted measurements CSV',table.to_csv(index=False),'current_duration.csv')
+    if st.button('Prepare publication figures'):S.figures=(p['fingerprint'],refhash,source,height,logx,figure_archive(table,'duration_ms',height,logx))
+    if S.get('figures') and S.figures[:5]==(p['fingerprint'],refhash,source,height,logx):st.download_button('Save PDF, SVG and 600 dpi PNG figures',S.figures[5],'current_duration_figures.zip','application/zip')
+    next_step('5 · Cluster events')
+elif step.startswith('5'):
+    st.header('5 · Cluster the events')
+    st.write('Use the selected fits from step 3, or compare with measured traces. Cluster numbers are not DNA topology labels.')
+    cfg=S.get('cluster_config',{})
+    source=st.radio('Signal used for clustering',['Selected fits','Measured trace'],index=cfg.get('source',0),horizontal=True)
+    algorithm=st.selectbox('Method',['PCA + agglomerative (DNA concept)','PCA + k-means (nanorod concept)','Waveform k-means','Time-series k-means (DTW)'],index=cfg.get('algorithm',0))
+    k=st.slider('Number of clusters',2,10,cfg.get('k',4))
+    defaults=['duration_ms','mean_blockade_nA','peak_blockade_nA','blockade_std_nA','peak_position','early_late_difference_nA']
+    with st.expander('Advanced clustering settings'):
+        fields=st.multiselect('Measured properties for PCA',list(FEATURE_DESCRIPTIONS),default=cfg.get('fields',defaults))
+        npc=st.slider('PCA components',1,6,cfg.get('npc',2));bins=st.select_slider('Waveform positions',[16,32,64],value=cfg.get('bins',32));radius=st.slider('DTW alignment radius',1,16,cfg.get('radius',4))
+        st.caption('PCA methods compare scaled properties. Waveform methods compare duration-normalised shapes while retaining blockade depth. These are paper-inspired adaptations, not the complete NanoBoost pipeline.')
+        st.json(FEATURE_DESCRIPTIONS)
+    S.cluster_config=dict(source=['Selected fits','Measured trace'].index(source),algorithm=['PCA + agglomerative (DNA concept)','PCA + k-means (nanorod concept)','Waveform k-means','Time-series k-means (DTW)'].index(algorithm),k=k,fields=fields,npc=npc,bins=bins,radius=radius)
+    signature=(p['fingerprint'],refhash,source,algorithm,k,tuple(fields),npc,bins,radius)
+    if st.button('Run clustering',type='primary'):
+        try:
+            with st.spinner('Grouping events… DTW can take longer on its first run.'):
+                sig=signal_events(active,source);feat=feature_table(sig);_,prof=describe(sig,bins)
+                if algorithm.startswith('PCA'):
+                    if len(fields)<2:raise ValueError('Select at least two properties.')
+                    info=cluster_features(feat[fields].to_numpy(),prof,k,npc,algorithm)
+                elif 'DTW' in algorithm:info=cluster_dtw(prof,k,False,radius)
+                else:info=cluster_profiles(prof,k,False)
+                table=measured.copy();table['cluster']=info['labels']
+                for col in feat.columns:
+                    if col!='event_index':table['clustering_'+col]=feat[col].to_numpy()
+                S.group={'signature':signature,'table':table,'info':info,'meta':{**meta,'clustering':{'source':source,'method':algorithm,'k':k,'features':fields if algorithm.startswith('PCA') else [],'pca_components':npc,'positions':bins,'dtw_radius':radius}}}
+                S.pop('prepared',None)
+        except Exception as ex:st.error(str(ex))
+    g=S.get('group')
+    if g and g['signature']!=signature:
+        S.pop('group',None);S.pop('prepared',None);st.info('Settings changed. Run clustering again to update the results.');st.stop()
+    if g:
+        info=g['info'];table=g['table'];st.success(f'{len(table)} events grouped into {len(np.unique(info["labels"]))} clusters using {source.lower()}.')
+        st.dataframe(table.groupby('cluster').size().rename('Events').to_frame())
+        scatter,_,dropped,*_=distribution_figures(table,'duration_ms','mean_blockade_nA',True,False,color='cluster');show(scatter,'clusters_physical')
+        st.caption('This scatter uses measured duration and mean blockade, coloured by cluster assignment, even when clustering used fits.')
+        show(profile_figure(info['profiles'],info['labels'],info['centers']),'cluster_profiles')
+        st.caption('Profile bands show the 10th–90th percentile of members, not uncertainty in the mean. DTW centres are aligned representative profiles.')
+        emb=pd.DataFrame(info['embedding'],columns=['PC1','PC2']);emb['Cluster']=info['labels'].astype(str);show(px.scatter(emb,x='PC1',y='PC2',color='Cluster'),'cluster_projection')
+        with st.expander('Numerical diagnostics'):
+            st.write('Silhouette:',info['silhouette']);st.caption('Geometric separation does not establish physical accuracy. Scores from different feature spaces cannot establish which method is better.')
+        cluster=st.selectbox('View traces from cluster',sorted(table.cluster.unique()));ids=table.loc[table.cluster==cluster,'event_index'].tolist()
+        eid=st.selectbox('Event in this cluster',ids);e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
+        if st.button('Prepare cluster publication figures'):S.cluster_figures=(signature,figure_archive(table,'duration_ms','mean_blockade_nA',True,'cluster'))
+        if S.get('cluster_figures') and S.cluster_figures[0]==signature:st.download_button('Save cluster PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_figures.zip')
+        next_step('6 · Save clusters')
+elif step.startswith('6'):
+    st.header('6 · Save cluster data')
+    g=S.get('group')
+    if not g:st.info('Run clustering in step 5 first.');st.stop()
+    st.caption('Saved grouping: '+g['meta']['clustering']['method']+' · '+g['meta']['clustering']['source'])
+    table=g['table'];st.download_button('Save all event assignments CSV',table.to_csv(index=False),'cluster_assignments.csv')
+    choice=st.selectbox('Download',['All clusters separately']+[f'Cluster {i}' for i in sorted(table.cluster.unique())])
+    key=(str(g['signature']),choice)
+    if st.button('Prepare cluster files',type='primary'):
+        groups=sorted(table.cluster.unique()) if choice=='All clusters separately' else [int(choice.split()[-1])]
+        outer=io.BytesIO()
+        with zipfile.ZipFile(outer,'w',zipfile.ZIP_DEFLATED) as z:
+            for i in groups:
+                sub=table[table.cluster==i];ids=set(sub.event_index);ev=[e for e in events if e.index in ids]
+                z.writestr(f'cluster_{i}.zip',bundle(ev,p['rawmap'],refs,p['dataset'],p['mapping'],p['settings'],p['dsettings'],sub,{**g['meta'],'cluster':int(i)}))
+        S.prepared=(key,outer.getvalue())
+    if S.get('prepared') and S.prepared[0]==key:st.download_button('Save cluster files ZIP',S.prepared[1],'cluster_files.zip','application/zip')
+    st.write('Each cluster contains its selected eventfitting file, matched eventdata and dataset files, event table and analysis settings. Uploaded fits are also retained inside the new fitting file.')
+    st.caption('Dataset rows are preserved as uploaded; they are not recalculated after refinement. Updated clustering measurements are in the CSV. Files reload in this app; compatibility with NanoSense re-import is not established.')

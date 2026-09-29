@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score
 from sklearn.decomposition import PCA
 
-VERSION='0.2.0'
+VERSION='0.3.0'
 @dataclass
 class Event:
     index:int

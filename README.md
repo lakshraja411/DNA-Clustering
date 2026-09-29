@@ -1,53 +1,73 @@
-# Nanopore Shape Lab
+# Nanopore Shape Lab 0.2
 
-A Streamlit app for inspecting NanoSense event-fitting exports and exploring recurring DNA translocation signal shapes. Version 0.1.0. Research prototype: no automatic molecular topology assignment.
+Streamlit research software for DNA event inspection, candidate fitting, unsupervised grouping and event-level exports. Inspired by the unsupervised nanorod and DNA concepts in Hart et al., **NanoBoost**, npj Biosensing 3, 38 (2026), DOI https://doi.org/10.1038/s44328-026-00105-x.
 
-## Run locally (Python 3.11 or 3.12 recommended)
+This is an adaptation, not an exact reproduction of NanoBoost, and has no demonstrated superiority. No power spectral density calculation or plot is included.
 
-Open a terminal inside this folder:
+## Update the existing GitHub / Streamlit app
+
+Replace `app.py`, `analysis.py`, `requirements.txt`, `check_app.py` and `README.md` in the repository root. **Add `plots.py`** beside app.py. Keep `.streamlit/config.toml` for styling. Upload the files inside this folder, not the ZIP itself. Commit the changes. Streamlit redeploys when dependencies change.
+
+Use **Python 3.12** on Streamlit Community Cloud. Changing Python requires deleting and recreating the Streamlit deployment, not the GitHub repository. Entry point: `app.py`. No secrets required. Official guide: https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy
+
+For a new repository, upload the same files and deploy at https://share.streamlit.io . Do not upload research NPZ data to GitHub; upload through the running app.
+
+## Run locally
+
+Python 3.12:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
-On Windows, activate with `.venv\Scripts\activate` instead.
+Windows activation: `.venv\Scripts\activate`. The first DTW run can be slower while numerical routines compile.
 
-## GitHub and Streamlit Community Cloud
+## Files accepted
 
-1. Create a GitHub repository called `nanopore-shape-lab` (choose visibility appropriate to your work).
-2. Upload `app.py`, `analysis.py`, `requirements.txt`, this README and the `.streamlit` folder. The project files belong in the repository root, not inside an extra enclosing folder. Include `.gitignore` if using git locally.
-3. At https://share.streamlit.io select Create app, connect that repository and branch, and choose `app.py` as the entry point. Select Python 3.11 or 3.12 in advanced settings if offered.
-4. Deploy. Upload the experimental NPZ using the running app, not to GitHub.
+- **event_fitting.npz:** observed flat NanoSense layout: `EVENT_DATA_<id>_part_0` time, part 1 current, part 2 event bounds, part 3 saved fit, part 4 baseline. `SEGMENT_INFO_*` and `EVENT_ANALYSIS_*` are preserved if present.
+- **event_data.npz:** verified using the supplied CsCl export. Contains `sampling_rate` and a NumPy object array `events`. Each dictionary has `event_id`, `start_time`, `end_time`, `event_data` (current minus baseline), `baseline_value`. The reader restores current by addition and constructs physical times with sampling_rate. These traces are cropped: no surrounding baseline noise or original fitted levels are present. The object-array reader accepts only NumPy array reconstruction primitives; arbitrary pickle globals are blocked. Inputs are limited to 512 MB expanded size.
+- **Numeric waveform layout:** `time`, `current` (event × sample) and `bounds` (event × 2); optional baseline and fit. Shared 1D time and scalar/shared baseline supported. Without baseline, padding is required for an explicitly flagged median estimate.
+- **dataset.npz:** numeric `X` table. Alone, it supports summary distribution plots. Alongside waveforms, rows are matched by unique start timestamps, never row position. Defaults for the supplied export: start column 8, duration column 4 (seconds), height column 0 (nA). Verify these configurable mappings. Unmatched and ambiguous matches remain visible. All matched source X rows are retained unchanged in exports.
 
-Official instructions: https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy
+Time units: seconds in source files; current units: nA. The source-specific event_data interpretation has been checked on the supplied sample; other export versions may require adjustment. The file-structure inspector shows unfamiliar layouts. File names and same start times do not guarantee identical acquisition sources.
 
-## Workflow
+## Interface
 
-Upload the full `.event_fitting.npz` for one recording condition. The `.dataset.npz` file has only summary values and is intentionally rejected. A SHORT export works but describes a selected population; event indices can be renumbered by the reduction software.
+1. **Inspect:** original waveform, baseline, original fit and optional candidate overlay; event index, recording time and segment table.
+2. **Waveform disagreement:** raw and relative RMSE, signed peak-height error and area error. Calculated inside the detected event only. A rectangular peak representation can disagree strongly with a rounded pulse without indicating a bad event. Original-fit disagreement filtering is **off by default**.
+3. **Refine fits:** selected event or whole file. Candidate fitting holds baseline and event boundaries fixed. Choose segment means at existing boundaries; PELT change-point detection with minimum duration and penalty; or one Gaussian rounded pulse. Originals are never overwritten. A smaller error is not proof of a better physical model. PELT uses L2 cost, jump=1, minimum samples from requested microseconds; its penalty is multiplier × log(n) in signal units normalised by padding std, or first-difference std if padding is absent. The noise scale has a small floor. Correlated noise can cause false steps. Gaussian is descriptive, not a deconvolution. Refinement is limited to 6,000 samples per event.
+4. **Cluster:** choose one of four approaches below. View profile means/barycentres, 10–90 percentile bands of unwarped profiles, PCA projection, event-profile heatmap, population table and example traces. Compare to previous run by ARI/crosstab on shared event IDs. Feature and original waveform methods offer k=2..8 exploration; no automatic topology count is chosen.
+5. **Distributions:** actual duration, mean/peak blockade, ECD, disagreement and segment count; scatter plots, 2D count heatmaps and histograms. Select full, clustered, excluded or individual-group populations. Log axes use geometric bins. Counts are not probability density; nonfinite/nonpositive points on log axes are reported. Export plotted tables and histogram counts/edges.
+6. **Download:** one group, excluded events, all events or all groups in separate ZIPs. Includes original waveforms and fits, source IDs, result CSV, metadata and matched original dataset rows. Candidate fits are separate `REFINED_*` arrays with method/parameters. Reloading events.npz analyses the original trace/fit; candidates remain available as separate arrays for offline use. NanoSense re-import compatibility is not established.
 
-1. Inspect saved traces, baseline and piecewise fits.
-2. Audit RMSE, bias, padding variability, segment timing and sample counts. No silent fit correction.
-3. Cluster measured, ordered profiles resampled at 16, 32 or 64 relative-time positions. K-means uses a shared amplitude scale, retaining cross-event depth differences. It ignores absolute dwell time. Group count and review gates are adjustable; groups are not forced into named topologies.
-4. Review centroid-nearest and deterministic random members. Silhouette and two-seed ARI measure geometric separation and limited numerical stability, not physical truth.
-5. Export CSV and JSON together. Group -1 means excluded by the selected review gates, not anomalous DNA.
+## Clustering methods and relation to NanoBoost
 
-The synthetic demo has idealised levels and noise; it tests the interface and is not experimental validation. No real research data are included in the software bundle.
+| Option | Implementation here | Relation to paper |
+|---|---|---|
+| PCA + agglomerative (default) | Min–max features to [-1,1], PCA, Ward-linkage hierarchy | DNA feature-clustering concept; Ward is our explicit choice |
+| PCA + k-means | Same feature scaling/PCA, k-means with 20 starts | Nanorod feature-clustering concept |
+| Waveform k-means | Ordered blockade values at 16/32/64/128 relative-time positions, Euclidean k-means | Original simple reference method |
+| Time-series k-means (DTW) | tslearn, Sakoe–Chiba alignment constraint, DTW barycentres, 1 start, 15 iterations | Paper's waveform-clustering concept, with explicit implementation limits |
 
-## Scientific limits and next development
+**Differences from the paper:** The paper used a larger feature set, including trough features for biphasic nanopipette events and wavelet-derived features. It applied DWT processing and studied different analytes/pore conditions. This app does not reproduce the authors' full preprocessing, optimise a mother wavelet, use XGBoost, or reproduce their exact data preparation or supplementary hyperparameters. We do not claim identical clusters. Feature formulas and retained PCA components are explicit. Optional Haar coefficient features are exploratory and do not implement the paper's tuned DWT denoising. Default features are duration, mean/peak blockade, within-event std, relative peak position and first-half minus second-half mean blockade. FWHM and three Haar coefficient features can be selected. Duration here is detected end-start, while the selectable FWHM is separately defined.
 
-Saved currents are assumed nA and times seconds. File layout is inferred from the supplied NanoSense exports. Some exports contain visible fit/trace disagreements; investigate reduction code before interpreting saved plateaus. Original raw acquisition data cannot be recovered from a filtered export. Time bins are shape descriptors, not independent samples or occupancy states. Interpolation, filtering, amplitude variation and pore interactions may drive groups. Padding standard deviation is not necessarily acquisition noise. Detection bias remains.
+Feature methods retain duration if selected; waveform methods rescale time to [0,1], removing absolute duration. Default waveform comparison preserves depth. Optional per-event amplitude normalisation removes depth information and can make different occupancy levels indistinguishable. Feature methods always use the measured trace for feature extraction and displayed profiles; fitting and waveform normalisation controls do not change those features.
 
-Before topology claims: verify export definitions; validate bandwidth and baseline treatment; infer reference blockade levels per pore/condition; assess sustained transitions with uncertainty; evaluate parameter changes, simulations passed through the acquisition filter, and held-out pores. Salt effects remain confounded with pore differences without appropriate replication. Fold and knot labels require evidence beyond cluster membership.
+PCA is a clustering input only in the feature methods; in waveform methods it is a 2D visual projection. Feature-cluster displayed profiles are unaligned averages of their members, not inverse-reconstructed feature centroids. DTW barycentres are displayed separately from unwarped percentile bands. Example selection uses pointwise distance to the displayed profile, plus three deterministic random members; it is distinct from model assignment distance.
 
-This app has no built-in cross-recording comparison, occupancy-state inference or validated topology classifier yet.
+DTW supports at most 2,000 eligible events and 64 positions to bound runtime. Its silhouette uses constrained DTW distances on a stratified sample of about 200 events. Other methods use Euclidean distances in their respective clustering spaces. Scores from different spaces do not demonstrate method superiority. Two-initialisation ARI is reported for k-means only; agglomerative is deterministic and DTW repeat stability has not been evaluated. Repeated runs are not independent physical validation. Cluster IDs have no meaning across runs.
 
-## Data handling
+## Scientific interpretation
 
-Numeric arrays load with `allow_pickle=False`. Expanded archives over 512 MB are rejected. Invalid events are listed. Uploads remain in the app server's session memory and are not explicitly written to disk by the app. Hosted uploads are processed on the hosting server; select app access settings accordingly. Export JSON omits the original acquisition filesystem path. Do not put sensitive data or credentials in GitHub.
+Neither good silhouette nor low waveform error establishes a DNA topology. Step detection may fit rounded edges; amplitude normalisation can remove occupancy evidence; DTW may erase meaningful fold-duration differences. Baseline choice, finite bandwidth, event detection and pore differences affect results. DWT coefficient values depend on wavelet, boundary convention and sampling. Establish the single-section blockade reference separately per pore/condition, use simulations with realistic noise/filtering and independent pore recordings, inspect random cluster members, and test parameter sensitivity before biological interpretation. No automatic knot labels, occupancy-state inference or cross-salt causal comparison is included.
+
+## Data and reproducibility
+
+Session memory holds uploaded data; no global cache shares uploads. Hosted data are processed on the server. Scientific arrays are not written to the repository by the app. Exports contain input hashes, software version, settings, feature selection, refinement parameters, matching rules and exclusion information. Original acquisition file paths are omitted from exported settings. Results become stale when relevant controls change and must be rerun before cluster export. Keep provenance JSON with CSV/NPZ files.
 
 ## Checks
 
-Run `python check_app.py` from this directory. Dependencies are pinned to the versions used for the bundled checks. The supplied full experimental export (1,400 events) and selected export (419 events) both loaded without rejected events during development. Summary-only input was correctly rejected. Four-group exploratory results overlapped (full-export silhouette approximately 0.224); this is not validation of four physical classes.
+Run `python check_app.py` from this folder. Checks cover known-level recovery, fixed-boundary least-squares error improvement, timestamp joins with reordered and ambiguous rows, exact original waveform/fit and dataset subset export roundtrips, disallowed serialized globals, and Streamlit grouping/refinement/download interactions. The provided full fitting export (1,400), cropped event_data export (1,400), and fitting subset (419) all load without rejected events. Synthetic checks establish numerical operation, not scientific validity.

@@ -14,18 +14,29 @@ st.sidebar.title('Your analysis')
 step=st.sidebar.radio('Step',['1 · Load files','2 · Inspect events','3 · Refine and save fits','4 · Current–duration plots','5 · Cluster events','6 · Save clusters'])
 st.sidebar.caption('Work with one recording at a time. Groups describe signal similarities; topology labels need physical validation.')
 S=st.session_state
+if st.sidebar.button('Clear files and start over'):
+    for key in list(S.keys()):
+        del S[key]
+    st.rerun()
+# Render upload widgets on every step so Streamlit does not discard their state.
+with st.sidebar.expander('Files retained for this session',expanded=step.startswith('1')):
+    uploads={}
+    for key,label in [('dataset','Summary · .dataset.npz'),('raw','Recorded events · .eventdata.npz / .event_data.npz'),('fits','Fitted events · .eventfitting.npz / .event_fitting.npz')]:
+        uploads[key]=st.file_uploader(label,type='npz',key='upload_'+key)
+    st.caption('Files stay here while you move between steps. Replacing a file takes effect after Load and check files. A new browser session requires uploading again.')
+if 'project' in S:
+    with st.sidebar.expander('Currently loaded recording'):
+        for item in S.project['files'].values():st.write(item['name'])
 
 def show(fig,key):
-    st.plotly_chart(scientific(fig),width='stretch',key=key,config={'displaylogo':False,'toImageButtonOptions':{'format':'svg','filename':key,'width':900,'height':600}})
+    st.plotly_chart(scientific(fig),width='stretch',key=key,theme=None,config={'displaylogo':False,'toImageButtonOptions':{'format':'svg','filename':key,'width':900,'height':600}})
 
 def next_step(label):st.info('Next: select '+label+' in the left-hand menu.')
 
 if step.startswith('1'):
     st.header('1 · Load the three files')
     st.write('Choose the dataset, recorded events and fitted events from the same recording. Both eventdata and event_data naming styles are accepted.')
-    uploads={}
-    for key,label in [('dataset','Summary · .dataset.npz'),('raw','Recorded events · .eventdata.npz / .event_data.npz'),('fits','Fitted events · .eventfitting.npz / .event_fitting.npz')]:
-        uploads[key]=st.file_uploader(label,type='npz',key='upload_'+key)
+    st.info('Upload or replace the three files in the left-hand Files panel. They remain available throughout this run.')
     with st.expander('Advanced: event matching'):
         col=st.number_input('Dataset start-time column (zero-based)',0,100,8)
         tol=st.number_input('Start-time tolerance (µs)',.001,1000.,.1,format='%.3f')*1e-6
@@ -36,10 +47,13 @@ if step.startswith('1'):
             events,settings,rejected=load_events(blobs['fits']);raw,rsettings,rreject=load_events(blobs['raw']);dataset,dsettings=load_dataset(blobs['dataset'])
             mapping,status=link_dataset(events,dataset,col,tol);rawmap,rstatus=match_raw(events,raw,tol)
             fingerprint=hashlib.sha256(b''.join(hashlib.sha256(blobs[k]).digest() for k in sorted(blobs))).hexdigest()
-            for key in ['refs','group','prepared','fitfile','fit_errors','recording_confirmed']:S.pop(key,None)
+            same_project=('project' in S and S.project['fingerprint']==fingerprint and S.project['matching']=={'start_column':col,'tolerance_s':tol})
+            if not same_project:
+                for key in ['refs','group','prepared','fitfile','fit_errors','recording_confirmed','confirmation_widget']:S.pop(key,None)
             S.project=dict(events=events,raw=raw,settings=settings,dsettings=dsettings,dataset=dataset,mapping=mapping,rawmap=rawmap,status=status,rstatus=rstatus,rejected=rejected+rreject,
                 fingerprint=fingerprint,files={k:{'name':u.name,'sha256':hashlib.sha256(blobs[k]).hexdigest()} for k,u in uploads.items()},matching={'start_column':col,'tolerance_s':tol})
-            S.refs={};st.success('Files read successfully. Review the matches below.')
+            if not same_project:S.refs={}
+            st.success('Files checked. Existing analysis retained.' if same_project else 'Files read successfully. Review the matches below.')
         except Exception as ex:st.error(str(ex))
     if 'project' in S:
         p=S.project;c=st.columns(3);c[0].metric('Fitted events',len(p['events']));c[1].metric('Matched recorded events',len(p['rawmap']));c[2].metric('Matched dataset rows',len(p['mapping']))

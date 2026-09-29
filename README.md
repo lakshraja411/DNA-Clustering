@@ -47,3 +47,6 @@ Upload data and generated downloads are held in the Streamlit session on its ser
 The supplied three full exports were checked for 1,400 unique timestamp matches. Tests verify refined-fit reload, unchanged measured traces/uploaded fits, fitted-feature extraction, dataset subset correspondence, matched raw subset exports, scientific figure generation, and the six-step UI including stale-result invalidation. These establish software behaviour, not topology accuracy.
 
 `check_app.py` expects the three supplied CsCl sample files in an `upload` folder beside this project folder; private experimental files are not bundled. Run it from the project folder when those fixtures are available.
+
+### Session persistence fix
+The three file upload controls remain mounted in the sidebar on every step. Returning to Load does not discard the files or the current analysis. Checking the same files and matching settings preserves refinements and assignments. Clear files and start over explicitly clears this session. Browser/session resets still require re-uploading.

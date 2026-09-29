@@ -55,9 +55,15 @@ PALETTE=['#0072B2','#D55E00','#009E73','#CC79A7','#E69F00','#56B4E9','#332288','
 def scientific(fig):
     fig.update_layout(template='plotly_white',font=dict(family='Arial, sans-serif',size=15,color='black'),
         paper_bgcolor='white',plot_bgcolor='white',colorway=PALETTE,margin=dict(l=75,r=35,t=45,b=70),
-        legend=dict(title_text='',bgcolor='rgba(255,255,255,0.8)'))
-    fig.update_xaxes(showline=True,linewidth=1,linecolor='black',ticks='outside',showgrid=False,zeroline=False,mirror=True)
-    fig.update_yaxes(showline=True,linewidth=1,linecolor='black',ticks='outside',showgrid=False,zeroline=False,mirror=True)
+        legend=dict(title_text='',font=dict(color='#18232b'),bgcolor='rgba(255,255,255,0.95)'),
+        title_font_color='#18232b',hoverlabel=dict(bgcolor='white',font_color='#18232b'))
+    fig.update_xaxes(showline=True,linewidth=1,linecolor='black',ticks='outside',showgrid=False,zeroline=False,mirror=True,title_font_color='#18232b',tickfont_color='#18232b')
+    fig.update_yaxes(showline=True,linewidth=1,linecolor='black',ticks='outside',showgrid=False,zeroline=False,mirror=True,title_font_color='#18232b',tickfont_color='#18232b')
+    fig.update_annotations(font_color='#18232b')
+    for trace in fig.data:
+        if hasattr(trace,'colorbar'):
+            trace.update(colorbar=dict(tickfont=dict(color='#18232b'),title=dict(font=dict(color='#18232b'))))
+    fig.update_coloraxes(colorbar_tickfont_color='#18232b',colorbar_title_font_color='#18232b')
     return fig
 
 def figure_archive(table,x,y,logx=False,color=None):

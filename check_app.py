@@ -31,6 +31,7 @@ at.session_state['project']=p;at.session_state['refs']={};at.session_state['reco
 
 def step(n):
  at.sidebar.radio[0].set_value(at.sidebar.radio[0].options[n-1]).run();assert not at.exception,at.exception
+ assert len(at.get('file_uploader'))==3
 
 def button(label):return next(b for b in at.button if b.label==label)
 step(2);step(3);button('Calculate refined fits').click().run();assert not at.exception
@@ -44,4 +45,8 @@ step(5);assert at.session_state['group']
 next(w for w in at.slider if w.label=='Number of clusters').set_value(3).run();assert not at.exception
 assert 'group' not in at.session_state
 step(6);assert not at.exception
+step(1);assert at.session_state['recording_confirmed'];assert at.session_state['refs']
+step(2);assert at.session_state['refs']
+button('Clear files and start over').click().run();assert not at.exception
+assert 'project' not in at.session_state and 'refs' not in at.session_state
 print('PASS: 1,400 three-file matches; refined-fit reload and original preservation; fitted-feature input; cluster subset alignment; scientific exports; complete guided UI and stale-group invalidation.')

@@ -2,7 +2,7 @@ import io,zipfile
 from pathlib import Path
 import numpy as np
 from streamlit.testing.v1 import AppTest
-from analysis import load_events,load_dataset,link_dataset,describe,refine,feature_table
+from analysis import load_events,load_dataset,link_dataset,describe,refine,feature_table,auto_cluster_features
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
 from plots import figure_archive
 root=Path(__file__).resolve().parent.parent/'upload'
@@ -39,14 +39,17 @@ button('Prepare new eventfitting file').click().run();assert not at.exception
 step(4);button('Prepare publication figures').click().run();assert not at.exception
 step(5);button('Run clustering').click().run();assert not at.exception,at.exception
 assert at.session_state['group']['meta']['clustering']['source']=='Selected fits'
+assert at.session_state['group']['meta']['clustering']['selection']=='automatic'
+assert 2<=at.session_state['group']['meta']['clustering']['k']<=8
+assert at.session_state['group']['info']['selection_table']
 step(6);button('Prepare cluster files').click().run();assert not at.exception
 assert at.session_state['prepared'][1]
 step(5);assert at.session_state['group']
-next(w for w in at.slider if w.label=='Number of clusters').set_value(3).run();assert not at.exception
+next(w for w in at.slider if w.label=='Maximum clusters to test').set_value(7).run();assert not at.exception
 assert 'group' not in at.session_state
 step(6);assert not at.exception
 step(1);assert at.session_state['recording_confirmed'];assert at.session_state['refs']
 step(2);assert at.session_state['refs']
 button('Clear files and start over').click().run();assert not at.exception
 assert 'project' not in at.session_state and 'refs' not in at.session_state
-print('PASS: 1,400 three-file matches; refined-fit reload and original preservation; fitted-feature input; cluster subset alignment; scientific exports; complete guided UI and stale-group invalidation.')
+print('PASS: 1,400 three-file matches; refined-fit reload and preservation; fitted-feature input; automatic k selection diagnostics; cluster subset alignment; scientific exports; guided UI and stale-group invalidation.')

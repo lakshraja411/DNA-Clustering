@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,feature_table,cluster_features,cluster_profiles,cluster_dtw,FEATURE_DESCRIPTIONS,safe_settings
+from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,feature_table,cluster_features,auto_cluster_features,cluster_profiles,cluster_dtw,FEATURE_DESCRIPTIONS,safe_settings
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
 from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive
 
@@ -72,7 +72,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.3.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.4.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
 st.sidebar.caption('Unrefined events retain their uploaded fits.')
@@ -141,47 +141,105 @@ elif step.startswith('4'):
     next_step('5 · Cluster events')
 elif step.startswith('5'):
     st.header('5 · Cluster the events')
-    st.write('Use the selected fits from step 3, or compare with measured traces. Cluster numbers are not DNA topology labels.')
+    st.write('Automatic mode uses all available signal-derived event features, standardises them, retains enough PCA components to explain the requested variance, then chooses the cluster count from several diagnostics. Cluster numbers are signal groups, not DNA topology labels.')
     cfg=S.get('cluster_config',{})
-    source=st.radio('Signal used for clustering',['Selected fits','Measured trace'],index=cfg.get('source',0),horizontal=True)
-    algorithm=st.selectbox('Method',['PCA + agglomerative (DNA concept)','PCA + k-means (nanorod concept)','Waveform k-means','Time-series k-means (DTW)'],index=cfg.get('algorithm',0))
-    k=st.slider('Number of clusters',2,10,cfg.get('k',4))
-    defaults=['duration_ms','mean_blockade_nA','peak_blockade_nA','blockade_std_nA','peak_position','early_late_difference_nA']
+    source_options=['Selected fits','Measured trace'];source=st.radio('Signal used for clustering',source_options,index=source_options.index(cfg.get('source','Selected fits')) if cfg.get('source','Selected fits') in source_options else 0,horizontal=True)
+    methods=['Automatic PCA + agglomerative (recommended)','PCA + agglomerative (manual)','PCA + k-means (manual)','Waveform k-means (manual)','Time-series k-means (DTW, manual)']
+    previous=cfg.get('algorithm',methods[0]);algorithm=st.selectbox('Method',methods,index=methods.index(previous) if previous in methods else 0)
+    is_feature=algorithm.startswith('Automatic') or algorithm.startswith('PCA')
+    is_auto=algorithm.startswith('Automatic')
+    bins=cfg.get('bins',32);radius=cfg.get('radius',4);k=cfg.get('k',4);npc=cfg.get('npc',2);kmax=cfg.get('kmax',8);variance_pct=cfg.get('variance_pct',95);repeats=cfg.get('repeats',6)
+    fields=[];feature_scope=cfg.get('feature_scope','All available features')
+    if is_feature:
+        feature_scope=st.radio('Feature set',['All available features','Custom'],index=0 if feature_scope!='Custom' else 1,horizontal=True)
+        if feature_scope=='All available features':fields=list(FEATURE_DESCRIPTIONS)
+        else:fields=st.multiselect('Features used for clustering',list(FEATURE_DESCRIPTIONS),default=cfg.get('fields',list(FEATURE_DESCRIPTIONS)))
+        if is_auto:
+            c1,c2,c3=st.columns(3)
+            kmax=c1.slider('Maximum clusters to test',3,10,int(kmax))
+            variance_pct=c2.slider('PCA variance retained (%)',80,99,int(variance_pct))
+            repeats=c3.select_slider('Stability repeats',options=[4,6,8,10,12],value=int(repeats) if int(repeats) in [4,6,8,10,12] else 6)
+            st.caption(f'Automatic search tests k = 2…{kmax}. It ranks silhouette ↑, Calinski–Harabasz ↑, Davies–Bouldin ↓ and subsampling stability ↑, with extra weight on silhouette and stability. PCA keeps the smallest number of components explaining at least {variance_pct}% of scaled-feature variance.')
+        else:
+            c1,c2=st.columns(2);k=c1.slider('Number of clusters',2,10,int(k));npc=c2.slider('PCA components',1,max(1,min(10,len(fields))),min(int(npc),max(1,min(10,len(fields)))))
+    else:
+        k=st.slider('Number of clusters',2,10,int(k))
     with st.expander('Advanced clustering settings'):
-        fields=st.multiselect('Measured properties for PCA',list(FEATURE_DESCRIPTIONS),default=cfg.get('fields',defaults))
-        npc=st.slider('PCA components',1,6,cfg.get('npc',2));bins=st.select_slider('Waveform positions',[16,32,64],value=cfg.get('bins',32));radius=st.slider('DTW alignment radius',1,16,cfg.get('radius',4))
-        st.caption('PCA methods compare scaled properties. Waveform methods compare duration-normalised shapes while retaining blockade depth. These are paper-inspired adaptations, not the complete NanoBoost pipeline.')
-        st.json(FEATURE_DESCRIPTIONS)
-    S.cluster_config=dict(source=['Selected fits','Measured trace'].index(source),algorithm=['PCA + agglomerative (DNA concept)','PCA + k-means (nanorod concept)','Waveform k-means','Time-series k-means (DTW)'].index(algorithm),k=k,fields=fields,npc=npc,bins=bins,radius=radius)
-    signature=(p['fingerprint'],refhash,source,algorithm,k,tuple(fields),npc,bins,radius)
+        bins=st.select_slider('Waveform positions',[16,32,64],value=bins if bins in [16,32,64] else 32)
+        if 'DTW' in algorithm:radius=st.slider('DTW alignment radius',1,16,int(radius))
+        if is_feature:
+            st.caption('Feature values are z-score standardised before PCA. Constant features and near-duplicate features (|r| ≥ 0.98 in automatic mode) are removed before PCA so one physical property is not counted repeatedly.')
+            st.json({f:FEATURE_DESCRIPTIONS[f] for f in fields})
+        else:st.caption('Waveform methods compare duration-normalised profiles while retaining blockade depth. DTW permits local time alignment.')
+    S.cluster_config=dict(source=source,algorithm=algorithm,k=k,fields=fields,npc=npc,bins=bins,radius=radius,kmax=kmax,variance_pct=variance_pct,repeats=repeats,feature_scope=feature_scope)
+    signature=(p['fingerprint'],refhash,source,algorithm,k,tuple(fields),npc,bins,radius,kmax,variance_pct,repeats,feature_scope)
     if st.button('Run clustering',type='primary'):
         try:
-            with st.spinner('Grouping events… DTW can take longer on its first run.'):
+            with st.spinner('Grouping events… automatic stability testing can take a little longer.'):
                 sig=signal_events(active,source);feat=feature_table(sig);_,prof=describe(sig,bins)
-                if algorithm.startswith('PCA'):
-                    if len(fields)<2:raise ValueError('Select at least two properties.')
-                    info=cluster_features(feat[fields].to_numpy(),prof,k,npc,algorithm)
-                elif 'DTW' in algorithm:info=cluster_dtw(prof,k,False,radius)
-                else:info=cluster_profiles(prof,k,False)
+                if is_feature:
+                    if len(fields)<2:raise ValueError('Select at least two event features.')
+                    matrix=feat[fields].to_numpy()
+                    base_method='PCA + agglomerative (DNA concept)' if 'agglomerative' in algorithm.lower() or is_auto else 'PCA + k-means (nanorod concept)'
+                    if is_auto:
+                        info=auto_cluster_features(matrix,prof,base_method,2,kmax,variance_pct/100,repeats,.8)
+                        selected_k=int(info['selected_k'])
+                    else:
+                        info=cluster_features(matrix,prof,k,npc,base_method);selected_k=int(k)
+                elif 'DTW' in algorithm:
+                    info=cluster_dtw(prof,k,False,radius);selected_k=int(k)
+                else:
+                    info=cluster_profiles(prof,k,False);selected_k=int(k)
                 table=measured.copy();table['cluster']=info['labels']
                 for col in feat.columns:
                     if col!='event_index':table['clustering_'+col]=feat[col].to_numpy()
-                S.group={'signature':signature,'table':table,'info':info,'meta':{**meta,'clustering':{'source':source,'method':algorithm,'k':k,'features':fields if algorithm.startswith('PCA') else [],'pca_components':npc,'positions':bins,'dtw_radius':radius}}}
+                clustering_meta={'source':source,'method':algorithm,'k':selected_k,'selection':'automatic' if is_auto else 'manual','features':fields if is_feature else [],
+                    'pca_components':info.get('n_components',npc if is_feature else None),'pca_variance_target':variance_pct/100 if is_auto else None,
+                    'positions':bins,'dtw_radius':radius,'automatic_k_range':[2,kmax] if is_auto else None,'stability_repeats':repeats if is_auto else None}
+                S.group={'signature':signature,'table':table,'info':info,'meta':{**meta,'clustering':clustering_meta}}
                 S.pop('prepared',None)
         except Exception as ex:st.error(str(ex))
     g=S.get('group')
     if g and g['signature']!=signature:
         S.pop('group',None);S.pop('prepared',None);st.info('Settings changed. Run clustering again to update the results.');st.stop()
     if g:
-        info=g['info'];table=g['table'];st.success(f'{len(table)} events grouped into {len(np.unique(info["labels"]))} clusters using {source.lower()}.')
+        info=g['info'];table=g['table'];selected_k=len(np.unique(info['labels']))
+        if info.get('selected_k') is not None:
+            st.success(f'Automatic selection chose {selected_k} clusters for {len(table)} events using {source.lower()}.')
+            st.caption(info.get('selection_method',''))
+            if info.get('selection_warning'):st.warning(info['selection_warning'])
+        else:st.success(f'{len(table)} events grouped into {selected_k} clusters using {source.lower()}.')
         st.dataframe(table.groupby('cluster').size().rename('Events').to_frame())
         scatter,_,dropped,*_=distribution_figures(table,'duration_ms','mean_blockade_nA',True,False,color='cluster');show(scatter,'clusters_physical')
-        st.caption('This scatter uses measured duration and mean blockade, coloured by cluster assignment, even when clustering used fits.')
+        st.caption('This physical scatter always shows measured duration and mean blockade, coloured by the cluster assignment, even when selected fits drove the clustering.')
         show(profile_figure(info['profiles'],info['labels'],info['centers']),'cluster_profiles')
-        st.caption('Profile bands show the 10th–90th percentile of members, not uncertainty in the mean. DTW centres are aligned representative profiles.')
+        st.caption('Profile bands are member 10th–90th percentiles, not uncertainty in the mean. Group IDs are ordered by increasing mean profile blockade for feature clustering.')
         emb=pd.DataFrame(info['embedding'],columns=['PC1','PC2']);emb['Cluster']=info['labels'].astype(str);show(px.scatter(emb,x='PC1',y='PC2',color='Cluster'),'cluster_projection')
+        if g['meta']['clustering']['features'] and 'loadings' in info:
+            kept=[f for f,keep in zip(g['meta']['clustering']['features'],info.get('feature_keep_mask',[True]*len(g['meta']['clustering']['features']))) if keep]
+            loads=np.asarray(info['loadings']);pcs=min(2,len(loads));rows=[]
+            for j in range(pcs):
+                var=100*info['scree'][j] if j<len(info.get('scree',[])) else np.nan
+                for name,value in zip(kept,loads[j]):rows.append({'Feature':name.replace('_',' ').replace(' nA','').title(),'Loading':value,'PC':f'PC{j+1} ({var:.1f}%)'})
+            if rows:
+                loadfig=px.bar(pd.DataFrame(rows),x='Loading',y='Feature',color='PC',barmode='group',orientation='h',title='What drives the PCA separation?')
+                show(loadfig,'pca_loadings')
+                st.caption('Large positive or negative loadings indicate features that contribute strongly to that principal component. Loading sign is arbitrary; magnitude is what matters.')
+        if info.get('selection_table'):
+            with st.expander('Why was this number of clusters selected?',expanded=True):
+                diag=pd.DataFrame(info['selection_table']);display=diag[['k','silhouette','calinski_harabasz','davies_bouldin','stability','stability_sd','min_cluster_size','consensus_rank']].copy()
+                display.columns=['k','Silhouette ↑','Calinski–Harabasz ↑','Davies–Bouldin ↓','Stability ARI ↑','Stability SD','Smallest cluster','Consensus rank ↓']
+                st.dataframe(display.round(4),hide_index=True)
+                dplot=diag.melt(id_vars='k',value_vars=['silhouette','stability'],var_name='Diagnostic',value_name='Score')
+                show(px.line(dplot,x='k',y='Score',color='Diagnostic',markers=True),'automatic_cluster_diagnostics')
+                st.caption('The chosen k has the best weighted rank consensus across four diagnostics, with silhouette and stability weighted twice. This is a reproducible, predefined signal-structure criterion, not proof that the groups are distinct DNA topologies.')
         with st.expander('Numerical diagnostics'):
-            st.write('Silhouette:',info['silhouette']);st.caption('Geometric separation does not establish physical accuracy. Scores from different feature spaces cannot establish which method is better.')
+            st.write('Silhouette:',info.get('silhouette'))
+            if 'calinski_harabasz' in info:st.write('Calinski–Harabasz:',info['calinski_harabasz'])
+            if 'davies_bouldin' in info:st.write('Davies–Bouldin:',info['davies_bouldin'])
+            if 'n_components' in info:
+                st.write('PCA components retained:',info['n_components']);st.write('Cumulative PCA variance retained:',float(np.sum(info.get('scree',[])[:info['n_components']])))
+            st.caption('These scores measure geometric separation and stability. They do not establish physical identity or topology accuracy.')
         cluster=st.selectbox('View traces from cluster',sorted(table.cluster.unique()));ids=table.loc[table.cluster==cluster,'event_index'].tolist()
         eid=st.selectbox('Event in this cluster',ids);e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
         if st.button('Prepare cluster publication figures'):S.cluster_figures=(signature,figure_archive(table,'duration_ms','mean_blockade_nA',True,'cluster'))

@@ -4,9 +4,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,feature_table,cluster_features,auto_cluster_features,cluster_profiles,cluster_dtw,FEATURE_DESCRIPTIONS,safe_settings
-from physical import level_features,PHYSICAL_DESCRIPTIONS
+from physical import level_features,level_stability,PHYSICAL_DESCRIPTIONS
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
-from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure,publication_archive,representative_time_examples,time_example_figure
+from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure,publication_archive,representative_time_examples,time_example_figure,resolved_level_figure
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
 st.title('DNA Event Lab')
@@ -66,7 +66,7 @@ if step.startswith('1'):
             fingerprint=hashlib.sha256(b''.join(hashlib.sha256(blobs[k]).digest() for k in sorted(blobs))).hexdigest()
             same_project=('project' in S and S.project['fingerprint']==fingerprint and S.project['matching']=={'start_column':col,'tolerance_s':tol})
             if not same_project:
-                for key in ['refs','group','prepared','fitfile','fit_errors','recording_confirmed','confirmation_widget']:S.pop(key,None)
+                for key in ['refs','group','prepared','fitfile','fit_errors','physical_stability','pelt_sensitivity','recording_confirmed','confirmation_widget']:S.pop(key,None)
             S.project=dict(events=events,raw=raw,settings=settings,dsettings=dsettings,dataset=dataset,mapping=mapping,rawmap=rawmap,status=status,rstatus=rstatus,rejected=rejected+rreject,
                 fingerprint=fingerprint,files={k:{'name':u.name,'sha256':hashlib.sha256(blobs[k]).hexdigest()} for k,u in uploads.items()},matching={'start_column':col,'tolerance_s':tol})
             if not same_project:S.refs={}
@@ -89,7 +89,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.5.1','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.6.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
 st.sidebar.caption('Unrefined events retain their uploaded fits.')
@@ -127,15 +127,38 @@ elif step.startswith('3'):
             except Exception as ex:errors.append({'event_id':item.index,'reason':str(ex)})
             bar.progress((j+1)/len(targets))
         S.refs=refs;S.fit_errors=errors
-        for key in ['group','prepared','fitfile']:S.pop(key,None)
+        for key in ['group','prepared','fitfile','physical_stability']:S.pop(key,None)
         st.rerun()
     show(trace_figure(e,refs.get(e.index)),'refinement')
     if e.index in refs:st.dataframe(pd.DataFrame([fit_metrics(e,e.fit),fit_metrics(e,refs[e.index]['fit'])],index=['Uploaded fit','Refined fit']))
     st.caption('A lower RMSE is not proof of a more accurate physical model. Baseline and event boundaries remain fixed.')
+    if method=='New levels (PELT)':
+        with st.expander('Check PELT boundary sensitivity for this event'):
+            st.caption('This is an event-level diagnostic. It asks whether modest changes in the PELT penalty/minimum step duration strongly change the number of fitted levels. It does not choose a universally correct penalty.')
+            if st.button('Run PELT sensitivity check',key='run_pelt_sensitivity'):
+                rows=[]
+                penalties=sorted({max(.1,penalty*.5),float(penalty),float(penalty)*1.5,float(penalty)*2})
+                durations=sorted({float(minimum),max(5.,float(minimum)*2)})
+                for du in durations:
+                    for pe in penalties:
+                        try:
+                            test=refine(e,'New levels (PELT)',du,pe)
+                            fm=fit_metrics(e,test['fit'])
+                            rows.append({'Minimum step (µs)':du,'Penalty':pe,'Fitted levels':len(test['levels']),
+                                         'Transitions':max(0,len(test['levels'])-1),'RMSE (nA)':fm['waveform_rmse_nA'],
+                                         'Noise scale (nA)':test['parameters'].get('noise_scale_nA',np.nan)})
+                        except Exception as ex:
+                            rows.append({'Minimum step (µs)':du,'Penalty':pe,'Error':str(ex)})
+                S.pelt_sensitivity={'signature':(int(e.index),float(minimum),float(penalty)),'table':pd.DataFrame(rows)}
+            pelt_check=S.get('pelt_sensitivity')
+            if pelt_check and pelt_check.get('signature')==(int(e.index),float(minimum),float(penalty)):
+                st.dataframe(pelt_check['table'],hide_index=True)
+            elif pelt_check:
+                st.info('Event or PELT settings changed. Re-run the sensitivity check for the current selection.')
     if S.get('fit_errors'):st.warning('Some refinements failed; their previous fits remain selected.');st.dataframe(pd.DataFrame(S.fit_errors),hide_index=True)
     if st.button('Discard all refinements',disabled=not refs):
         S.refs={}
-        for key in ['group','prepared','fitfile']:S.pop(key,None)
+        for key in ['group','prepared','fitfile','physical_stability']:S.pop(key,None)
         st.rerun()
     if st.button('Prepare new eventfitting file',disabled=not refs):S.fitfile=(refhash,fitting_bytes(events,refs,p['settings'],meta))
     if S.get('fitfile') and S.fitfile[0]==refhash:st.download_button('Save refined.eventfitting.npz',S.fitfile[1],'refined.eventfitting.npz','application/octet-stream')
@@ -179,15 +202,13 @@ elif step.startswith('5'):
                 min_height=c2.number_input('Minimum level difference (nA)',min_value=0.,value=float(previous_params.get('min_height_nA',.1)),format='%.3f')
                 noise_mult=c3.number_input('Noise multiplier for level merging',min_value=0.,value=float(previous_params.get('noise_multiplier',3.)))
                 st.caption('Adjacent levels merge when their difference is ≤ max(minimum level difference, noise multiplier × robust noise scale). Minimum duration is also at least three sample intervals. Set these analysis thresholds for your sampling and instrument bandwidth; the defaults are provisional.')
-                omit_edges=st.checkbox('Omit short boundary plateaus from physical features',value=previous_params.get('omit_short_boundaries',True))
-                st.caption('Only the first and last merged plateaus can be omitted. This flags unresolved boundaries, not proven artefacts. Internal short levels still exclude the event. Original traces, fits and total event duration are preserved; deeper-level fractions use retained resolved duration.')
                 use_ref=st.checkbox('Use a calibrated single-file blockade reference',value=previous_params.get('reference_nA') is not None)
                 reference=st.number_input('Single-file reference blockade (nA)',min_value=.000001,value=float(previous_params.get('reference_nA') or 1.),format='%.4f') if use_ref else None
                 use_deep=st.checkbox('Include time fraction above a deeper-blockade threshold',value=previous_params.get('deep_threshold_nA') is not None)
                 threshold=st.number_input('Deeper-blockade threshold (nA)',min_value=.000001,value=float(previous_params.get('deep_threshold_nA') or 1.),format='%.4f') if use_deep else None
                 if use_ref or use_deep:st.caption('Supply a reference/threshold established for this recording condition. A threshold crossing does not establish a fold or strand count. Events near the threshold are flagged.')
                 include_duration=st.checkbox('Include event duration',value=cfg.get('include_duration',True))
-            physical_params=dict(min_duration_us=min_us,min_height_nA=min_height,noise_multiplier=noise_mult,reference_nA=reference,deep_threshold_nA=threshold,omit_short_boundaries=omit_edges)
+            physical_params=dict(min_duration_us=min_us,min_height_nA=min_height,noise_multiplier=noise_mult,reference_nA=reference,deep_threshold_nA=threshold)
             fields=['deepest_plateau_ratio' if use_ref else 'deepest_plateau_nA','resolved_transitions','transition_direction']
             if use_deep:fields.append('deep_time_fraction')
             if include_duration:fields.append('duration_ms')
@@ -216,26 +237,54 @@ elif step.startswith('5'):
     physical_audit=None;physical_sequences=None
     if is_feature and feature_scope=='Physical level features':
         physical_audit,physical_sequences=level_features(active,source,**physical_params)
-        usable=int(physical_audit.physical_eligible.sum())
-        st.info(f'{usable} of {len(active)} events have resolved plateaus under the current settings.')
+        usable=int(physical_audit.physical_eligible.sum());excluded_count=len(active)-usable
+        st.info(f'{usable} of {len(active)} events have resolved plateaus under the current settings; {excluded_count} are excluded from this feature model.')
         with st.expander('Check physical-feature eligibility before clustering'):
             st.dataframe(physical_audit,hide_index=True)
             st.download_button('Save physical feature audit CSV',physical_audit.to_csv(index=False),'physical_feature_audit.csv','text/csv')
-        edge_count=int(physical_audit.get('boundary_omission_applied',pd.Series(dtype=bool)).fillna(False).sum())
-        if edge_count:st.caption(f'{edge_count} events have brief boundary plateaus omitted from physical descriptors. Their omitted time is recorded in the audit.')
-        flagged_ids=physical_audit.loc[(~physical_audit.physical_eligible) | physical_audit.get('boundary_omission_applied',False).fillna(False),'event_index'].tolist() if 'boundary_omission_applied' in physical_audit else physical_audit.loc[~physical_audit.physical_eligible,'event_index'].tolist()
-        if flagged_ids:
-            with st.expander('Inspect flagged or boundary-adjusted events'):
-                audit_id=st.selectbox('Flagged event ID',flagged_ids)
-                audit_event=next(e for e in events if e.index==audit_id)
-                audit_fig=trace_figure(audit_event,refs.get(audit_id))
-                audit_levels=physical_sequences.loc[physical_sequences.event_index==audit_id]
-                for level in audit_levels.itertuples():
-                    if level.level_status!='resolved':audit_fig.add_vrect(x0=level.start_from_event_ms,x1=level.start_from_event_ms+level.duration_ms,fillcolor='#e89b35',opacity=.25,line_width=0)
-                show(audit_fig,'physical_flagged_trace')
-                st.caption('Amber shading marks omitted or unresolved levels. Their status and exact duration are listed below. Shading does not establish that a segment is noise.')
-                st.dataframe(audit_levels,hide_index=True)
-        st.caption('Unresolved events are excluded from this feature model and retained for download. Refine their step fits or review the resolution settings before comparing results.')
+        st.caption('Unresolved events are retained for download. Report the exclusion fraction when comparing recordings, because resolution rules can change the analysed population.')
+
+        eligible_ids=physical_audit.loc[physical_audit.physical_eligible,'event_index'].astype(int).tolist()
+        with st.expander('Validate the resolved plateaus before clustering',expanded=True):
+            st.write('The red step trace below is the final plateau reconstruction actually used to calculate transition count, direction and deep-state occupancy. The orange trace is the selected step fit that supplied the boundaries.')
+            if eligible_ids:
+                validation_id=st.selectbox('Resolved event to inspect',eligible_ids,key='physical_validation_event')
+                validation_event=next(e for e in active if e.index==validation_id)
+                event_seq=physical_sequences[physical_sequences.event_index==validation_id].copy()
+                show(resolved_level_figure(validation_event,event_seq,source,threshold if use_deep else None),'resolved_level_validation')
+                audit_row=physical_audit.loc[physical_audit.event_index==validation_id].iloc[0]
+                c1,c2,c3,c4=st.columns(4)
+                c1.metric('Resolved levels',int(audit_row.resolved_levels))
+                c2.metric('Transitions',int(audit_row.resolved_transitions))
+                c3.metric('Noise scale',f'{audit_row.noise_scale_nA:.3g} nA')
+                c4.metric('Merge threshold',f'{audit_row.merge_height_nA:.3g} nA')
+                display_cols=['level_order','start_from_event_ms','duration_ms','blockade_nA','transition_from_previous_nA','transition_snr']
+                if use_deep and 'above_deeper_threshold' in event_seq:display_cols.append('above_deeper_threshold')
+                st.dataframe(event_seq[display_cols],hide_index=True)
+                st.caption('Transition SNR here is |ΔI between adjacent resolved plateaus| divided by the robust noise scale. The merging rule already requires adjacent levels to exceed max(minimum level difference, noise multiplier × noise); the SNR is shown so you can audit the margin directly.')
+            else:
+                st.warning('No events are currently eligible for resolved-level validation.')
+
+            st.markdown('**Resolution-parameter robustness**')
+            st.caption('This sensitivity check changes only the post-fit plateau-resolution rules. It does not re-run PELT or prove the fitted change-point boundaries are correct.')
+            duration_choices=st.multiselect('Minimum plateau durations to test (µs)',[10.,25.,50.,75.,100.,150.,200.],default=[25.,50.,75.,100.],key='stability_durations')
+            noise_choices=st.multiselect('Noise multipliers to test',[1.5,2.,2.5,3.,3.5,4.,5.],default=[2.,3.,4.],key='stability_noise')
+            if st.button('Run resolved-level robustness check',key='run_physical_stability',disabled=not duration_choices or not noise_choices):
+                with st.spinner('Re-evaluating resolved plateau counts across the selected resolution settings…'):
+                    summary_stability,detail_stability,overall_stability=level_stability(active,source,min_height_nA=min_height,
+                        reference_nA=reference,deep_threshold_nA=threshold,baseline_min_duration_us=min_us,
+                        baseline_noise_multiplier=noise_mult,duration_values_us=duration_choices,noise_multipliers=noise_choices)
+                    S.physical_stability={'signature':signature,'summary':summary_stability,'detail':detail_stability,'overall':overall_stability}
+            stab=S.get('physical_stability')
+            if stab and stab.get('signature')==signature:
+                overall=stab['overall'];frac=overall.get('strict_stable_fraction',np.nan)
+                if np.isfinite(frac):st.metric('Baseline-eligible events with unchanged transition count in every tested setting',f'{100*frac:.1f}%')
+                st.caption(f"{overall.get('strict_stable_events',0)} of {overall.get('baseline_eligible_events',0)} baseline-eligible events were eligible and retained the same transition count for all {overall.get('tested_configurations',0)} tested combinations.")
+                st.dataframe(stab['summary'],hide_index=True)
+                st.download_button('Save resolved-level stability summary CSV',stab['summary'].to_csv(index=False),'resolved_level_stability.csv','text/csv')
+                st.download_button('Save all robustness configurations CSV',stab['detail'].to_csv(index=False),'resolved_level_stability_detail.csv','text/csv')
+            elif stab:
+                st.info('Physical-feature settings changed. Re-run the robustness check for the current settings.')
     if st.button('Run clustering',type='primary'):
         try:
             with st.spinner('Grouping events… automatic stability testing can take a little longer.'):
@@ -269,10 +318,12 @@ elif step.startswith('5'):
                 table['cluster']=info['labels']
                 for col in feat.columns:
                     if col!='event_index':table['clustering_'+col]=feat[col].to_numpy()
+                current_level_stability=S.get('physical_stability') if is_feature and feature_scope=='Physical level features' else None
+                level_stability_meta=current_level_stability.get('overall') if current_level_stability and current_level_stability.get('signature')==signature else None
                 clustering_meta={'source':source,'method':algorithm,'k':selected_k,'selection':'automatic' if is_auto else 'manual','features':fields if is_feature else [],
                     'pca_components':info.get('n_components',npc if is_feature else None),'pca_variance_target':variance_pct/100 if is_auto else None,
                     'positions':bins,'dtw_radius':radius,'automatic_k_range':[2,kmax] if is_auto else None,'stability_repeats':repeats if is_auto else None,
-                    'feature_set':feature_scope,'physical_settings':physical_params,'excluded_events':len(excluded),
+                    'feature_set':feature_scope,'physical_settings':physical_params,'excluded_events':len(excluded),'resolved_level_stability':level_stability_meta,
                     'retained_features':[f for f,keep in zip(fields,info.get('feature_keep_mask',[True]*len(fields))) if keep] if is_feature else [],
                     'feature_mean':info.get('feature_mean'),'feature_scale':info.get('feature_scale'),'pca_loadings':info.get('loadings'),
                     'diagnostics':info.get('selection_table'),'selection_method':info.get('selection_method'),'selection_warning':info.get('selection_warning'),
@@ -373,7 +424,14 @@ elif step.startswith('5'):
                 st.write('PCA components retained:',info['n_components']);st.write('Cumulative PCA variance retained:',float(np.sum(info.get('scree',[])[:info['n_components']])))
             st.caption('These scores measure geometric separation and stability. They do not establish physical identity or topology accuracy.')
         cluster=st.selectbox('View traces from cluster',sorted(table.cluster.unique()));ids=table.loc[table.cluster==cluster,'event_index'].tolist()
-        eid=st.selectbox('Event in this cluster',ids);e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
+        eid=st.selectbox('Event in this cluster',ids)
+        if g['meta']['clustering'].get('feature_set')=='Physical level features' and len(sequences):
+            e=next(e for e in active if e.index==eid);event_seq=sequences[sequences.event_index==eid]
+            deep=g['meta']['clustering'].get('physical_settings',{}).get('deep_threshold_nA')
+            show(resolved_level_figure(e,event_seq,g['meta']['clustering']['source'],deep),'cluster_event_resolved')
+            st.caption('For physical-feature clustering, this view shows the final resolved plateaus that generated the event descriptors, not just the pre-merge step fit.')
+        else:
+            e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
         if st.button('Prepare cluster profile figures'):S.cluster_figures=(signature,profile_archive(info['profiles'],info['labels'],info['centers']))
         if S.get('cluster_figures') and S.cluster_figures[0]==signature:st.download_button('Save profile PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_profiles.zip')
         if st.button('Prepare combined publication figure'):
@@ -400,7 +458,7 @@ elif step.startswith('6'):
             if choice=='All clusters separately' and len(excluded):
                 z.writestr('physical_exclusions.csv',excluded.to_csv(index=False))
                 ids=set(excluded.event_index);ev=[e for e in events if e.index in ids]
-                z.writestr('unresolved_events.zip',bundle(ev,p['rawmap'],refs,p['dataset'],p['mapping'],p['settings'],p['dsettings'],excluded,{**g['meta'],'assignment':'excluded'},g.get('sequences')))
+                z.writestr('unresolved_events.zip',bundle(ev,p['rawmap'],refs,p['dataset'],p['mapping'],p['settings'],p['dsettings'],excluded,{**g['meta'],'assignment':'excluded'}))
         S.prepared=(key,outer.getvalue())
     if S.get('prepared') and S.prepared[0]==key:st.download_button('Save cluster files ZIP',S.prepared[1],'cluster_files.zip','application/zip')
     st.write('Each cluster contains its selected eventfitting file, matched eventdata and dataset files, event table and analysis settings. Physical-feature runs also include resolved_levels.csv; the all-clusters download retains excluded events in unresolved_events.zip. Uploaded fits are also retained inside the new fitting file.')

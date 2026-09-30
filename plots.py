@@ -237,3 +237,33 @@ def time_example_figure(table):
         f.add_trace(go.Scatter(x=sub.time_ms,y=sub.blockade_nA,mode='lines',line=dict(color=PALETTE[j%len(PALETTE)],width=1.7),name=f'Cluster {group} · event {sub.event_id.iloc[0]}'))
     f.update_layout(xaxis_title='Time from detected event start (ms)',yaxis_title='Current blockade (nA)',height=420)
     return f
+
+
+def resolved_level_figure(e,sequence,source='Selected fits',deep_threshold_nA=None):
+    """Overlay measured signal, selected step fit and final QC-resolved plateaus."""
+    import pandas as pd
+    seq=sequence.copy() if hasattr(sequence,'copy') else pd.DataFrame(sequence)
+    m=(e.time>=e.bounds[0])&(e.time<e.bounds[1])
+    x=(e.time[m]-e.bounds[0])*1000
+    measured=(e.baseline-e.current)[m]
+    f=go.Figure()
+    f.add_trace(go.Scatter(x=x,y=measured,mode='lines',name='Measured blockade',line=dict(color='#35a8c2',width=1.1)))
+    if e.fit is not None:
+        fitted=(e.baseline-e.fit)[m]
+        f.add_trace(go.Scatter(x=x,y=fitted,mode='lines',name='Selected step fit',line=dict(color='#f7a04a',width=1.4,shape='hv')))
+    if len(seq):
+        seq=seq.sort_values('level_order')
+        sx=seq['start_from_event_ms'].to_list()+[float(seq['end_from_event_ms'].iloc[-1])]
+        sy=seq['blockade_nA'].to_list()+[float(seq['blockade_nA'].iloc[-1])]
+        f.add_trace(go.Scatter(x=sx,y=sy,mode='lines',name='Resolved plateaus used for features',line=dict(color='#D62728',width=3,shape='hv')))
+        trans=seq.iloc[1:]
+        if len(trans):
+            custom=np.c_[trans['transition_from_previous_nA'].to_numpy(float),trans['transition_snr'].to_numpy(float)]
+            f.add_trace(go.Scatter(x=trans['start_from_event_ms'],y=trans['blockade_nA'],mode='markers',name='Resolved transitions',
+                                   marker=dict(symbol='diamond',size=8,color='black'),customdata=custom,
+                                   hovertemplate='Transition at %{x:.4g} ms<br>ΔI=%{customdata[0]:.4g} nA<br>|ΔI|/noise=%{customdata[1]:.3g}<extra></extra>'))
+    if deep_threshold_nA is not None:
+        f.add_hline(y=float(deep_threshold_nA),line_dash='dot',annotation_text='Deep-blockade threshold')
+    f.update_layout(height=430,xaxis_title='Time from detected event start (ms)',yaxis_title='Current blockade ΔI (nA)',
+                    title=f'Resolved-level validation · event {e.index} · heights from {source.lower()}')
+    return f

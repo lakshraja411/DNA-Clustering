@@ -1,3 +1,9 @@
+# Version 0.6 validation addendum
+
+Version 0.6 adds direct auditing of the plateau representation that feeds the physical descriptors. The UI overlays measured blockade, selected step-fit boundaries and the final noise/height-merged resolved plateaus. Adjacent resolved transitions export a signed current change and a transition-to-noise ratio. A recording-level sensitivity scan can vary minimum plateau duration and the noise multiplier and quantify how often baseline-eligible events retain the same transition count. This is a sensitivity analysis of post-fit resolution rules, not an independent validation of the fitted change-point boundaries.
+
+PELT now estimates its noise scale robustly using padding MAD when baseline padding is available, or first-difference MAD when it is not. The event-level PELT sensitivity table shows how the number of fitted levels changes under modest penalty and minimum-step-duration changes. Neither diagnostic establishes topology accuracy; independent recordings and, where possible, external labels or controlled constructs remain necessary for that claim.
+
 # Version 0.5 addendum
 
 The review below describes the previous legacy-feature engine. Version 0.5 defaults to resolved physical level descriptors; its extraction checks validate signal calculations, not topology assignments. Resolution settings and calibrated thresholds require experimental justification. Exclusions alter the analysed population and must be reported. No full-recording physical clustering accuracy benchmark was performed.

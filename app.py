@@ -201,7 +201,16 @@ elif step.startswith('5'):
             repeats=c3.select_slider('Stability repeats',options=[4,6,8,10,12],value=int(repeats) if int(repeats) in [4,6,8,10,12] else 6)
             st.caption(f'Automatic search tests k = 2…{kmax}; it cannot establish that separate populations exist. It ranks silhouette ↑, Calinski–Harabasz ↑, Davies–Bouldin ↓ and subsampling stability ↑, with extra weight on silhouette and stability. PCA keeps the smallest number of components explaining at least {variance_pct}% of scaled-feature variance.')
         else:
-            c1,c2=st.columns(2);k=c1.slider('Number of clusters',2,10,int(k));npc=c2.slider('PCA components',1,max(1,min(10,len(fields))),min(int(npc),max(1,min(10,len(fields)))))
+            c1,c2=st.columns(2)
+            k=c1.slider('Number of clusters',2,10,int(k))
+            max_pc=min(10,len(fields))
+            if max_pc>=2:
+                npc=c2.slider('PCA components',1,max_pc,min(int(npc),max_pc))
+            else:
+                npc=1
+                c2.metric('PCA components',1)
+                c2.caption('Only one feature is currently available.')
+                st.warning('Select at least two event features for PCA-based clustering.')
     else:
         k=st.slider('Number of clusters',2,10,int(k))
     with st.expander('Advanced clustering settings'):

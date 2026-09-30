@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.6.0'
+VERSION='0.5.1'
 @dataclass
 class Event:
     index:int
@@ -155,18 +155,10 @@ def refine(e,method='Segment means',min_duration_us=25.,penalty=8.):
             import ruptures as rpt
             ms=max(2,int(np.ceil(min_duration_us*1e-6/dt)))
             pad=(e.baseline-e.current)[~m]
-            def robust_sigma(v):
-                v=np.asarray(v,float);v=v[np.isfinite(v)]
-                if len(v)<2:return np.nan
-                med=np.median(v);return float(np.median(np.abs(v-med))/.67448975)
-            if len(pad)>3:
-                noise=robust_sigma(pad);noise_source='padding MAD'
-            else:
-                dif=np.diff(y);noise=robust_sigma(dif)/np.sqrt(2) if len(dif)>=2 else np.nan;noise_source='within-event first-difference MAD'
-            fallback=max(float(np.std(y))*1e-3,1e-6)
-            if not np.isfinite(noise) or noise<fallback:noise=fallback
+            noise=float(np.std(pad)) if len(pad)>3 else float(np.std(np.diff(y))/np.sqrt(2))
+            noise=max(noise,float(np.std(y))*1e-3,1e-6)
             ends=[n] if n<2*ms else rpt.Pelt(model='l2',min_size=ms,jump=1).fit(y/noise).predict(pen=float(penalty)*np.log(max(n,2)))
-            params=dict(min_duration_us=min_duration_us,penalty_multiplier=penalty,noise_scale_nA=float(noise),noise_estimator=noise_source)
+            params=dict(min_duration_us=min_duration_us,penalty_multiplier=penalty,noise_scale_nA=noise)
         else:raise ValueError('Unknown method')
         yf=np.empty(n);levels=[];widths=[];start=0
         for end in ends:

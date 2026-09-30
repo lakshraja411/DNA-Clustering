@@ -1,18 +1,12 @@
-# DNA Event Lab 0.6.0
+## Boundary handling correction (0.5.1)
 
+Step 5 → Physical feature settings → **Omit short boundary plateaus from physical features** is enabled by default and can be disabled for comparison. After adjacent height merging, only the first and last merged plateaus can be omitted if shorter than the effective minimum duration. The algorithm does not repeatedly peel further short segments: short internal plateaus still require review. A wholly short event has no sustained core and remains excluded. This is an explicit analysis policy, not proof that the boundary segment is an artefact.
 
-## 0.6.0 resolved-level validation update
+The original trace, event boundaries and saved/refined fit are unchanged. Plateau depth, transitions and direction use the retained resolved levels. Deeper-level occupancy uses retained analysed duration; the duration feature remains total detected duration. Audit columns include analysed duration/fraction, omitted boundary time, short boundary/internal counts and a boundary omission flag. Ordered level exports retain all merged levels and identify omitted, unresolved and used levels. Step 5 offers flagged-event inspection with amber shading. Cluster exports include omitted levels; excluded-event downloads include unresolved levels when extraction was possible.
 
-This version adds an explicit validation layer before physical-feature clustering:
+Compare clustering with boundary omission enabled/disabled before using it in a final analysis. Report exclusions and omitted durations. A brief edge may be real; omission reflects insufficient resolution under the declared thresholds.
 
-- The selected event can be viewed with the measured blockade, selected step fit and the **final merged resolved plateaus actually used for physical features** overlaid in one plot.
-- Every retained transition now exports its signed height change and **transition SNR**, defined as `|ΔI between adjacent resolved plateaus| / robust noise scale`.
-- The app can re-evaluate the entire recording across user-selected minimum plateau durations and noise multipliers. It reports the fraction of baseline-eligible events that remain eligible and keep the same transition count for every tested setting. This tests post-fit resolution robustness; it does **not** re-fit PELT boundaries.
-- PELT refinement now uses the same robust MAD-style noise estimate used by the physical-level QC (padding MAD where available, first-difference MAD otherwise), rather than ordinary standard deviation.
-- Step 3 includes an event-level PELT sensitivity table across modest penalty and minimum-duration changes. This is a diagnostic, not an automatic parameter optimiser.
-- Resolved-level CSV exports now include plateau start/end times, signed transition height, transition SNR, robust noise scale, effective merge threshold and effective minimum duration.
-
-A stable result means the signal description is less sensitive to reasonable analysis settings; it does not establish DNA topology or strand count. The plateau boundaries still originate from the selected step fit in both signal-height modes.
+# DNA Event Lab 0.5.1
 
 Replace all application files in your GitHub repository with the files in this folder, including the new `physical.py`. Keep `app.py` as your Streamlit entry point. Commit the changes, then reboot your Streamlit app if it has not refreshed.
 
@@ -26,9 +20,9 @@ PCA clustering now defaults to physical level features:
 - Optional fraction of duration above a user-defined deeper-blockade threshold.
 - Optional event duration.
 
-Selected step fits supply the boundaries. Selected-fit mode uses fitted plateau heights; measured-trace mode uses measured sample means within those same boundaries. Adjacent heights merge at the larger of the absolute height threshold and noise multiplier times a robust noise scale (padding MAD, or first-difference MAD when padding is insufficient). The default settings are provisional analysis choices; adjust for instrument bandwidth and sampling. Minimum plateau duration is at least three sampling intervals. Continuous, missing or unresolved fits are excluded from this model rather than assigned fabricated plateau features. Use step refinement to review those events.
+Selected step fits supply the boundaries. Selected-fit mode uses fitted plateau heights; measured-trace mode uses measured sample means within those same boundaries. Adjacent heights merge at the larger of the absolute height threshold and noise multiplier times a robust noise scale (padding MAD, or first-difference MAD when padding is insufficient). The default settings are provisional analysis choices; adjust for instrument bandwidth and sampling. Minimum plateau duration is at least three sampling intervals. Continuous or missing step fits, short internal plateaus and events without a sustained core are excluded from this model rather than assigned fabricated plateau features. Use step refinement to review those events.
 
-Eligibility is visible before clustering. Feature audit CSV includes resolution settings and exclusion reasons. Each physical cluster exports ordered resolved levels; the combined download also includes excluded traces, fits and available dataset rows. Duration-normalised waveform/DTW methods and legacy features remain available for comparison. Changing settings invalidates stale cluster results.
+Eligibility is visible before clustering. Feature audit CSV includes resolution settings and exclusion reasons. Each physical cluster exports ordered levels with status and whether they were used for features; the combined download also includes excluded traces, fits and available dataset rows. Duration-normalised waveform/DTW methods and legacy features remain available for comparison. Changing settings invalidates stale cluster results.
 
 No descriptor proves a fold, strand count or DNA topology. Calibrate any reference and threshold for the recording conditions. Threshold-sensitive events are flagged; compare alternative thresholds and inspect the raw signals. Automatic k selection remains exploratory and does not test whether a single population would suffice.
 

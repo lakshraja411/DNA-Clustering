@@ -73,6 +73,11 @@ with zipfile.ZipFile(io.BytesIO(at.session_state['prepared'][1])) as outer:
    with zipfile.ZipFile(io.BytesIO(outer.read(name))) as inner:assert 'resolved_levels.csv' in inner.namelist()
  if len(g['excluded']):assert 'unresolved_events.zip' in outer.namelist()
 step(5);assert at.session_state['group']
+next(w for w in at.checkbox if w.label=='Omit short boundary plateaus from physical features').uncheck().run();assert not at.exception
+assert 'group' not in at.session_state
+next(w for w in at.checkbox if w.label=='Omit short boundary plateaus from physical features').check().run();assert not at.exception
+button('Run clustering').click().run();assert not at.exception
+assert at.session_state['group']
 next(w for w in at.slider if w.label=='Maximum clusters to test').set_value(7).run();assert not at.exception
 assert 'group' not in at.session_state
 step(6);assert not at.exception

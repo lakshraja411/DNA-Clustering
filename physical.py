@@ -6,12 +6,12 @@ from analysis import mask
 PHYSICAL_DESCRIPTIONS={
  'deepest_plateau_nA':'Deepest sustained resolved plateau blockade (nA), excluding isolated sample maxima.',
  'deepest_plateau_ratio':'Deepest plateau divided by a user-supplied, condition-specific single-file reference.',
- 'deep_time_fraction':'Fraction of detected event duration in resolved plateaus above the user-defined deeper-blockade threshold.',
+ 'deep_time_fraction':'Fraction of analysed resolved duration in plateaus above the user-defined deeper-blockade threshold.',
  'resolved_transitions':'Number of changes between adjacent resolved plateaus after height merging; not strand count.',
  'transition_direction':'(Last plateau − first plateau) / (highest − lowest resolved plateau); zero for one level. Positive = deeper at the end.',
  'duration_ms':'Detected end minus start in ms; optionally omitted to compare configurations without kinetics.'}
 
-def level_features(events,source='Selected fits',min_duration_us=25.,min_height_nA=.1,noise_multiplier=3.,reference_nA=None,deep_threshold_nA=None):
+def level_features(events,source='Selected fits',min_duration_us=25.,min_height_nA=.1,noise_multiplier=3.,reference_nA=None,deep_threshold_nA=None,omit_short_boundaries=True):
     if source not in ['Selected fits','Measured trace']:raise ValueError('Unknown physical-feature signal source.')
     if not all(np.isfinite(v) for v in [min_duration_us,min_height_nA,noise_multiplier]):raise ValueError('Resolution settings must be finite.')
     if min_duration_us<0 or min_height_nA<0 or noise_multiplier<0:raise ValueError('Resolution settings must be nonnegative.')
@@ -43,20 +43,34 @@ def level_features(events,source='Selected fits',min_duration_us=25.,min_height_
                 if differences[j]>height_tol:break
                 a,b=segments[j:j+2];joined={'left':a['left'],'right':b['right'],'start':a['start'],'end':b['end'],'value':float(chosen[a['start']:b['end']].mean())}
                 segments[j:j+2]=[joined]
-            row.update(noise_scale_nA=noise,noise_estimator=noise_source,merge_height_nA=height_tol,effective_min_duration_us=minimum*1e6,resolved_levels=len(segments))
-            if any(a['right']-a['left']<minimum-1e-12 for a in segments):raise ValueError('a plateau is shorter than the minimum resolved duration; inspect/refine the event')
-            heights=np.array([a['value'] for a in segments]);widths=np.array([a['right']-a['left'] for a in segments]);span=float(np.ptp(heights))
-            direction=float((heights[-1]-heights[0])/span) if len(segments)>1 and span>height_tol else 0.
-            row.update(deepest_plateau_nA=float(heights.max()),resolved_transitions=len(segments)-1,transition_direction=direction,duration_ms=duration*1000,physical_eligible=True)
-            if reference_nA is not None:row['deepest_plateau_ratio']=float(heights.max()/reference_nA)
-            if deep_threshold_nA is not None:
-                row['deep_time_fraction']=float(widths[heights>deep_threshold_nA].sum()/duration)
-                row['threshold_sensitive']=bool(np.any(np.abs(heights-deep_threshold_nA)<=height_tol))
-            for j,a in enumerate(segments):
-                item={'event_index':e.index,'level_order':j,'start_from_event_ms':(a['left']-e.bounds[0])*1000,'duration_ms':(a['right']-a['left'])*1000,'blockade_nA':a['value'],'source':source}
+            row.update(noise_scale_nA=noise,noise_estimator=noise_source,merge_height_nA=height_tol,effective_min_duration_us=minimum*1e6)
+            short=[a['right']-a['left']<minimum-1e-12 for a in segments]
+            statuses=[]
+            for j,is_short in enumerate(short):
+                edge=j==0 or j==len(segments)-1
+                statuses.append('omitted_boundary' if is_short and edge and omit_short_boundaries else 'unresolved_boundary' if is_short and edge else 'unresolved_internal' if is_short else 'resolved')
+            resolved=[a for a,status in zip(segments,statuses) if status=='resolved']
+            omitted=sum(a['right']-a['left'] for a,status in zip(segments,statuses) if status=='omitted_boundary')
+            analysed=sum(a['right']-a['left'] for a in resolved)
+            row.update(resolved_levels=len(resolved),boundary_omission_applied=omitted>0,omitted_boundary_duration_us=omitted*1e6,analysed_duration_ms=analysed*1000,analysed_fraction=analysed/duration,
+                       short_boundary_levels=sum(status in ['omitted_boundary','unresolved_boundary'] for status in statuses),short_internal_levels=statuses.count('unresolved_internal'))
+            reason=''
+            if any(status.startswith('unresolved') for status in statuses):reason='an internal plateau is shorter than the minimum resolved duration; inspect/refine the event' if 'unresolved_internal' in statuses else 'a boundary plateau is shorter than the minimum resolved duration; enable boundary omission or inspect/refine the event'
+            elif not resolved:reason='no sustained plateau remains after boundary omission; inspect/refine the event'
+            # Preserve every merged level for audit, including omitted and unresolved ones.
+            for j,(a,status) in enumerate(zip(segments,statuses)):
+                item={'event_index':e.index,'level_order':j,'start_from_event_ms':(a['left']-e.bounds[0])*1000,'duration_ms':(a['right']-a['left'])*1000,'blockade_nA':a['value'],'source':source,'level_status':status,'used_for_features':status=='resolved' and not reason,'event_eligible':not bool(reason)}
                 if reference_nA is not None:item['blockade_ratio']=a['value']/reference_nA
                 if deep_threshold_nA is not None:item['above_deeper_threshold']=a['value']>deep_threshold_nA
                 sequences.append(item)
+            if reason:raise ValueError(reason)
+            heights=np.array([a['value'] for a in resolved]);widths=np.array([a['right']-a['left'] for a in resolved]);span=float(np.ptp(heights))
+            direction=float((heights[-1]-heights[0])/span) if len(resolved)>1 and span>height_tol else 0.
+            row.update(deepest_plateau_nA=float(heights.max()),resolved_transitions=len(resolved)-1,transition_direction=direction,duration_ms=duration*1000,physical_eligible=True)
+            if reference_nA is not None:row['deepest_plateau_ratio']=float(heights.max()/reference_nA)
+            if deep_threshold_nA is not None:
+                row['deep_time_fraction']=float(widths[heights>deep_threshold_nA].sum()/analysed)
+                row['threshold_sensitive']=bool(np.any(np.abs(heights-deep_threshold_nA)<=height_tol))
         except ValueError as ex:row['physical_exclusion_reason']=str(ex)
         rows.append(row)
-    return pd.DataFrame(rows),pd.DataFrame(sequences,columns=['event_index','level_order','start_from_event_ms','duration_ms','blockade_nA','source']+(['blockade_ratio'] if reference_nA is not None else [])+(['above_deeper_threshold'] if deep_threshold_nA is not None else []))
+    return pd.DataFrame(rows),pd.DataFrame(sequences,columns=['event_index','level_order','start_from_event_ms','duration_ms','blockade_nA','source','level_status','used_for_features','event_eligible']+(['blockade_ratio'] if reference_nA is not None else [])+(['above_deeper_threshold'] if deep_threshold_nA is not None else []))

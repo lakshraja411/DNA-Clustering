@@ -1,4 +1,4 @@
-# DNA Event Lab · 0.4.1
+# DNA Event Lab · 0.4.3
 
 A guided Streamlit workflow for inspecting DNA nanopore events, refining fits, plotting physical distributions, suggesting candidate signal groups, and exporting event subsets. No synthetic demonstration or power spectral density is included in the interface.
 
@@ -91,3 +91,16 @@ python -m py_compile analysis.py app.py workflow.py plots.py
 Previous/Next arrow buttons appear above each step and at the bottom of completed steps. Files and analysis remain in the same session. Next from loading requires a confirmed recording; Next from clustering requires a computed grouping. The sidebar remains available for direct navigation.
 
 Automatic mode is labelled exploratory. It suggests the best weighted-rank candidate among k=2…kmax and cannot test the one-population case. Extra warnings flag missing stability repeats, upper-boundary choices and very small groups. Score weights and warning thresholds are explicit heuristics. Scaling/PCA parameters, retained feature names, diagnostic tables and effective subsample fraction are now included in provenance. See CLUSTERING_REVIEW.md for scientific interpretation and limitations.
+
+## PC1–PC2 view restored in 0.4.2
+Step 5 includes the PCA scatter with cluster colours, event IDs and measured quantities on hover, variance labels, and coordinate CSV export. Feature clustering may use more than the two shown coordinates; waveform methods use PCA only for display. A one-component feature solution explicitly marks PC2 as zero. The coloured current–duration cluster scatter remains removed.
+
+## Paper-style figures in 0.4.3
+
+Step 5 now shows faint sampled member profiles with a red representative curve for each cluster, a comparison of representatives, PC1–PC2 points with optional convex hulls and black projected-group mean markers, and one real example event per group in actual milliseconds. Profile panels share a common y range. Hulls are visual outlines, not confidence regions, and are omitted for collinear or undersized groups. PCA points remain unmodified and outlines can overlap.
+
+Each cluster panel displays at most 40 uniformly sampled members (seed 42); its representative uses all members. Representatives are means for feature/waveform k-means methods and barycentres for DTW. Absolute durations are removed only in the profile panels. The actual-time panel shows one real event nearest to the representative by pointwise profile distance, aligned at detected start; its original sample times/duration are retained. It is an example event, not an averaged centroid. No DNA topology cartoons or microscopy are generated.
+
+Use **Prepare combined publication figure** to export a labelled multi-panel PDF, SVG and 600 dpi PNG, with PCA coordinates, representative curves, actual-time examples, selected member IDs and a caption. No smoothing is added for presentation. Time-normalised averages can be rounded even when individual fitted events are steps.
+
+For this update, replace **both app.py and plots.py together**. A previous plots.py will lack the newly imported figure helpers. Keep the reviewed analysis.py/workflow.py and requirements. These exports have been rendered for visual inspection and exercised through the Streamlit UI test.

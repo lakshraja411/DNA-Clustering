@@ -32,7 +32,7 @@ Inspect a fixed random selection of events per group plus boundary/outlying memb
 - scikit-learn clustering and internal evaluation: https://scikit-learn.org/stable/modules/clustering.html
 - StandardScaler and outlier sensitivity: https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.StandardScaler.html
 
-The review also fixed rejection of a valid one-feature space after redundant-feature pruning. The interface changes remove coloured cluster scatter and PCA scatter plots from step 5, retain step 4 distributions, add arrow navigation, expose selection limitations and save the selection diagnostics. The underlying weighted-rank rule is retained so results remain comparable to the uploaded version.
+The review also fixed rejection of a valid one-feature space after redundant-feature pruning. The initial review removed coloured cluster scatter and PCA scatter plots from step 5. Subsequent requested updates restored the PCA scatter and added paper-style profile panels and a composite figure. Step 4 distributions, arrow navigation, selection limitations and saved diagnostics remain available. The underlying weighted-rank rule is retained so results remain comparable to the uploaded version.
 
 ## Checks performed for this update
 

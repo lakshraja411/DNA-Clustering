@@ -5,7 +5,7 @@ import plotly.express as px
 import streamlit as st
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,feature_table,cluster_features,auto_cluster_features,cluster_profiles,cluster_dtw,FEATURE_DESCRIPTIONS,safe_settings
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
-from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive
+from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure,publication_archive,representative_time_examples,time_example_figure
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
 st.title('DNA Event Lab')
@@ -88,7 +88,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.4.1','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.4.3','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
 st.sidebar.caption('Unrefined events retain their uploaded fits.')
@@ -233,8 +233,43 @@ elif step.startswith('5'):
         summary['Fraction']=summary.Events/len(table)
         st.dataframe(summary)
         st.caption('Summary measurements above come from the measured traces. Compare these with the selected-signal profiles and original event traces below.')
+        st.subheader('Members and representative profile of each cluster')
+        columns=st.columns(3)
+        for group_id in range(selected_k):
+            with columns[group_id%3]:
+                show(member_profile_figure(info['profiles'],info['labels'],info['centers'],group_id),f'cluster_members_{group_id}')
+        st.caption('Faint curves: up to 40 uniformly sampled profiles per cluster (seed 42). Red curve: representative from all members—mean profile for feature/k-means methods, aligned barycentre for DTW. These profiles use the selected clustering signal.')
+        st.subheader('Comparison of the representative profiles')
         show(profile_figure(info['profiles'],info['labels'],info['centers']),'cluster_profiles')
         st.caption('Profile bands are member 10th–90th percentiles, not uncertainty in the mean. Group IDs are ordered by increasing mean profile blockade for feature clustering.')
+        time_examples=representative_time_examples(active,info,g['meta']['clustering']['source'])
+        with st.expander('Representative example events in actual time (ms)',expanded=True):
+            show(time_example_figure(time_examples),'cluster_actual_time')
+            st.caption('One real event per cluster nearest to the representative by pointwise profile distance, aligned at detected start. Original sample times and event duration are retained. These are example events, not averaged centroids; the source matches the clustering signal.')
+            st.download_button('Save actual-time example curves',time_examples.to_csv(index=False),'actual_time_examples.csv','text/csv')
+        st.subheader('PC1–PC2 view of the event groups')
+        embedding=np.asarray(info['embedding'])
+        variance=info.get('pca_variance',[])
+        axis_labels={f'PC{j+1}':f'PC{j+1} ({100*variance[j]:.1f}% variance)' if j<len(variance) else f'PC{j+1}' for j in range(2)}
+        projection=pd.DataFrame(embedding,columns=['PC1','PC2'])
+        projection['Cluster']=table['cluster'].astype(str).to_numpy()
+        projection['Event ID']=table['event_index'].to_numpy()
+        projection['Duration (ms)']=table['duration_ms'].to_numpy()
+        projection['Measured mean blockade (nA)']=table['mean_blockade_nA'].to_numpy()
+        outlines=st.checkbox('Show shaded cluster outlines',True)
+        fig=cluster_pca_figure(projection,axis_labels,outlines)
+        show(fig,'cluster_projection')
+        st.caption('Shading outlines each group’s convex hull in this 2D view. Outlines may overlap and are not confidence regions or clustering boundaries. Black crosses mark mean projected group positions.')
+        if g['meta']['clustering']['features']:
+            retained=info.get('n_components',2)
+            if retained==1:
+                st.caption('Only one PCA component was retained. PC2 is shown as zero; clustering uses PC1 only.')
+            else:
+                st.caption(f'This plot displays the first two PCA coordinates. Clustering used {retained} retained components from the selected signal features; differences in other components may be hidden here.')
+        else:
+            st.caption('PCA is used only to display the waveform groups here. Waveform k-means and DTW form their groups from the waveform profiles, not from these two plotted coordinates.')
+        st.caption('Each point is one event. Colours indicate its assigned cluster. Hover to find its event ID, then inspect the original trace below. The axes combine signal measurements and have no direct current/time units.')
+        st.download_button('Save PC1–PC2 coordinates CSV',projection.to_csv(index=False),'pca_coordinates.csv','text/csv')
         if g['meta']['clustering']['features'] and 'loadings' in info:
             kept=[f for f,keep in zip(g['meta']['clustering']['features'],info.get('feature_keep_mask',[True]*len(g['meta']['clustering']['features']))) if keep]
             loads=np.asarray(info['loadings']);pcs=min(2,len(loads));rows=[]
@@ -266,6 +301,10 @@ elif step.startswith('5'):
         eid=st.selectbox('Event in this cluster',ids);e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
         if st.button('Prepare cluster profile figures'):S.cluster_figures=(signature,profile_archive(info['profiles'],info['labels'],info['centers']))
         if S.get('cluster_figures') and S.cluster_figures[0]==signature:st.download_button('Save profile PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_profiles.zip')
+        if st.button('Prepare combined publication figure'):
+            S.publication_figure=((signature,outlines),publication_archive(info,table['event_index'].to_numpy(),g['meta']['clustering']['source'],g['meta']['clustering']['method'],outlines,time_examples))
+        if S.get('publication_figure') and S.publication_figure[0]==(signature,outlines):
+            st.download_button('Save combined PDF, SVG and 600 dpi PNG',S.publication_figure[1],'cluster_publication_figure.zip','application/zip')
         next_step('6 · Save clusters')
 elif step.startswith('6'):
     st.header('6 · Save cluster data')

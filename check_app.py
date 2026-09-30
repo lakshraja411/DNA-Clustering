@@ -54,6 +54,10 @@ assert at.session_state['group']['meta']['clustering']['source']=='Selected fits
 assert at.session_state['group']['meta']['clustering']['selection']=='automatic'
 assert 2<=at.session_state['group']['meta']['clustering']['k']<=8
 assert at.session_state['group']['info']['selection_table']
+assert any(h.value=='PC1–PC2 view of the event groups' for h in at.subheader)
+button('Prepare combined publication figure').click().run();assert not at.exception
+with zipfile.ZipFile(io.BytesIO(at.session_state['publication_figure'][1])) as z:
+ assert 'cluster_figure.pdf' in z.namelist() and 'actual_time_examples.csv' in z.namelist()
 button('Prepare cluster profile figures').click().run();assert not at.exception
 assert len(zipfile.ZipFile(io.BytesIO(at.session_state['cluster_figures'][1])).namelist())==5
 next(b for b in at.button if b.key=='next_bottom').click().run();assert not at.exception

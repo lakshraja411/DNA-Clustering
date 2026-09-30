@@ -129,3 +129,111 @@ def profile_archive(profiles,labels,centers):
             z.writestr('README.txt','Profiles from the selected clustering signal. Bands are 10th–90th member percentiles, not confidence intervals. For DTW the representative curves are aligned barycentres while percentile bands use unwarped profiles. Absolute duration is removed from these profiles; amplitude is retained.\n')
         plt.close(fig)
     return out.getvalue()
+
+
+def hull_vertices(points):
+    """Convex outline in the displayed 2D projection; skip degenerate groups."""
+    from scipy.spatial import ConvexHull,QhullError
+    points=np.unique(np.asarray(points,float),axis=0)
+    if len(points)<3 or np.linalg.matrix_rank(points-points.mean(axis=0),tol=1e-10)<2:return None
+    try:return points[ConvexHull(points).vertices]
+    except QhullError:return None
+
+
+def cluster_pca_figure(projection,axis_labels,outlines=True):
+    f=go.Figure()
+    for j,(label,g) in enumerate(projection.groupby('Cluster',sort=True)):
+        color=PALETTE[j%len(PALETTE)];points=g[['PC1','PC2']].to_numpy();poly=hull_vertices(points)
+        if outlines and poly is not None:
+            closed=np.vstack([poly,poly[0]])
+            rgb=tuple(int(color[h:h+2],16) for h in (1,3,5))
+            f.add_trace(go.Scatter(x=closed[:,0],y=closed[:,1],mode='lines',line=dict(color=color,width=1),fill='toself',fillcolor=f'rgba({rgb[0]},{rgb[1]},{rgb[2]},0.12)',showlegend=False,hoverinfo='skip'))
+        f.add_trace(go.Scatter(x=points[:,0],y=points[:,1],mode='markers',name=f'Cluster {label} (n={len(g)})',marker=dict(color=color,size=5,opacity=.7),
+            customdata=g[['Event ID','Duration (ms)','Measured mean blockade (nA)']].to_numpy(),hovertemplate='Event %{customdata[0]:.0f}<br>Duration %{customdata[1]:.4g} ms<br>Measured mean blockade %{customdata[2]:.4g} nA<br>PC1 %{x:.4g}<br>PC2 %{y:.4g}<extra>%{fullData.name}</extra>'))
+        mean=points.mean(axis=0)
+        f.add_trace(go.Scatter(x=[mean[0]],y=[mean[1]],mode='markers',marker=dict(symbol='x',size=11,color='black'),name=f'Cluster {label} mean position',showlegend=False,hovertemplate='Mean position in displayed PCA coordinates<extra></extra>'))
+    f.update_layout(xaxis_title=axis_labels['PC1'],yaxis_title=axis_labels['PC2'],height=460)
+    return f
+
+
+def member_profile_figure(profiles,labels,centers,group,limit=40):
+    phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1]
+    members=np.flatnonzero(np.asarray(labels)==group);rng=np.random.default_rng(42)
+    chosen=np.sort(rng.choice(members,min(limit,len(members)),replace=False))
+    f=go.Figure()
+    for pos in chosen:
+        f.add_trace(go.Scatter(x=phase,y=profiles[pos],mode='lines',line=dict(color='rgba(0,114,178,0.16)',width=.8),showlegend=False,hoverinfo='skip'))
+    f.add_trace(go.Scatter(x=phase,y=centers[group],mode='lines',line=dict(color='#D62728',width=2.5),name='Representative profile'))
+    f.update_layout(title=f'Cluster {group} · n={len(members)}',xaxis_title='Fraction of event duration',yaxis_title='Blockade (nA)',height=300)
+    low=min(profiles.min(),centers.min());high=max(profiles.max(),centers.max());pad=max(.05,.06*(high-low))
+    f.update_yaxes(range=[low-pad,high+pad])
+    return f
+
+
+def publication_archive(info,event_ids,source,method,outlines=True,time_examples=None):
+    """Paper-style composite: PCA, cluster members and representative comparison."""
+    import io,json,zipfile,math
+    import pandas as pd
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    embedding=np.asarray(info['embedding']);profiles=np.asarray(info['profiles']);labels=np.asarray(info['labels']);centers=np.asarray(info['centers'])
+    phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1];k=len(centers);rows=math.ceil((k+1+(time_examples is not None))/3)
+    out=io.BytesIO();rng=np.random.default_rng(42);selected={};summary=[]
+    with plt.rc_context({'font.family':'sans-serif','font.size':9,'axes.linewidth':.8,'svg.fonttype':'none','pdf.fonttype':42,'xtick.direction':'out','ytick.direction':'out','text.color':'black','axes.labelcolor':'black','xtick.color':'black','ytick.color':'black'}):
+        fig=plt.figure(figsize=(9,3.4+2.5*rows),layout='constrained');grid=fig.add_gridspec(rows+1,3,height_ratios=[1.3]+[1]*rows)
+        ax=fig.add_subplot(grid[0,:]);variance=info.get('pca_variance',[])
+        for j in range(k):
+            members=np.flatnonzero(labels==j);points=embedding[members];color=PALETTE[j%len(PALETTE)];poly=hull_vertices(points)
+            if outlines and poly is not None:ax.fill(poly[:,0],poly[:,1],color=color,alpha=.12);closed=np.vstack([poly,poly[0]]);ax.plot(closed[:,0],closed[:,1],color=color,lw=.8)
+            ax.scatter(points[:,0],points[:,1],color=color,s=10,alpha=.7,edgecolors='none',label=f'Cluster {j} (n={len(members)})')
+            mean=points.mean(axis=0);ax.scatter(*mean,marker='x',color='black',s=40,lw=1.4)
+        ax.set_xlabel(f'PC1 ({100*variance[0]:.1f}% variance)' if variance else 'PC1');ax.set_ylabel(f'PC2 ({100*variance[1]:.1f}% variance)' if len(variance)>1 else 'PC2 (zero if only one PC retained)');ax.legend(frameon=False,fontsize=8,ncol=min(k,5),loc='upper center',bbox_to_anchor=(.5,1.17));ax.set_title('a) PCA projection',loc='left',pad=25)
+        # Common profile y scale permits honest comparison across cluster panels.
+        low=min(profiles.min(),centers.min());high=max(profiles.max(),centers.max());pad=max(.05,.06*(high-low));axes=[]
+        for j in range(k):
+            a=fig.add_subplot(grid[1+j//3,j%3]);members=np.flatnonzero(labels==j);chosen=np.sort(rng.choice(members,min(40,len(members)),replace=False));selected[str(j)]=np.asarray(event_ids)[chosen].tolist()
+            for pos in chosen:a.plot(phase,profiles[pos],color='#0072B2',alpha=.14,lw=.6)
+            a.plot(phase,centers[j],color='#D62728',lw=1.7)
+            a.set_title(f'{chr(98+j)}) Cluster {j} (n={len(members)})',loc='left');a.set_xlabel('Fraction of event duration');a.set_ylabel('Blockade (nA)');a.set_ylim(low-pad,high+pad);axes.append(a)
+            for i,t in enumerate(phase):summary.append({'cluster':j,'phase':t,'representative_blockade_nA':centers[j,i]})
+        index=k;a=fig.add_subplot(grid[1+index//3,index%3])
+        for j,c in enumerate(centers):a.plot(phase,c,color=PALETTE[j%len(PALETTE)],lw=1.4,label=f'Cluster {j}')
+        a.set_title(f'{chr(98+k)}) Representative comparison',loc='left');a.set_xlabel('Fraction of event duration');a.set_ylabel('Blockade (nA)');a.set_ylim(low-pad,high+pad);a.legend(frameon=False,fontsize=7)
+        if time_examples is not None:
+            index=k+1;a=fig.add_subplot(grid[1+index//3,index%3])
+            for j,(group,sub) in enumerate(time_examples.groupby('cluster',sort=True)):
+                a.plot(sub.time_ms,sub.blockade_nA,color=PALETTE[j%len(PALETTE)],lw=1.2,label=f'Cluster {group}, event {sub.event_id.iloc[0]}')
+            a.set_title(f'{chr(99+k)}) Example events in actual time',loc='left');a.set_xlabel('Time from event start (ms)');a.set_ylabel('Blockade (nA)');a.legend(frameon=False,fontsize=7)
+        with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+            for ext in ['pdf','svg','png']:
+                b=io.BytesIO();fig.savefig(b,format=ext,dpi=600,facecolor='white');z.writestr('cluster_figure.'+ext,b.getvalue())
+            z.writestr('pca_coordinates.csv',pd.DataFrame({'event_id':event_ids,'cluster':labels,'PC1':embedding[:,0],'PC2':embedding[:,1]}).to_csv(index=False))
+            if time_examples is not None:z.writestr('actual_time_examples.csv',time_examples.to_csv(index=False))
+            z.writestr('representative_profiles.csv',pd.DataFrame(summary).to_csv(index=False))
+            z.writestr('figure_settings.json',json.dumps({'source':source,'method':method,'outlines':outlines,'displayed_member_ids':selected,'member_sample_seed':42,'members_per_panel_limit':40,'x_axis':'fraction of event duration','centres':'DTW barycentres' if 'DTW' in method else 'mean member profiles'},indent=2))
+            z.writestr('CAPTION.txt',f'PCA view of {len(labels)} events grouped using {method}, signal source {source}. Shaded regions are convex hulls in the displayed 2D coordinates, not confidence regions or decision boundaries; x markers are mean projected group positions, not physical identities. Cluster panels show up to 40 uniformly sampled member profiles (seed 42) behind representative curves computed from all members. Representatives are mean profiles except for DTW, which uses aligned barycentres; DTW members are shown unwarped. Time is normalised separately for each event, so these curves do not represent absolute dwell time. Amplitude remains in nA. Feature clustering can use more PCs than shown; waveform clustering uses PCA only for display. The actual-time panel shows one real event per group nearest to its representative by pointwise profile distance; these are example events, not averaged centroids. Their original time sampling and detected durations are preserved, aligned at detected start. No physical/topological identity is inferred.\n')
+        plt.close(fig)
+    return out.getvalue()
+
+
+def representative_time_examples(events,info,source):
+    """One real event per group, ranked by pointwise profile distance."""
+    import pandas as pd
+    rows=[];profiles=np.asarray(info['profiles']);labels=np.asarray(info['labels'])
+    for group,center in enumerate(info['centers']):
+        positions=np.flatnonzero(labels==group)
+        pos=positions[np.argmin(np.linalg.norm(profiles[positions]-center,axis=1))]
+        e=events[pos];signal=e.current if source=='Measured trace' else e.fit
+        m=(e.time>=e.bounds[0])&(e.time<e.bounds[1])
+        for t,y in zip((e.time[m]-e.bounds[0])*1000,(e.baseline-signal)[m]):
+            rows.append({'cluster':group,'event_id':e.index,'time_ms':float(t),'blockade_nA':float(y)})
+    return pd.DataFrame(rows)
+
+
+def time_example_figure(table):
+    f=go.Figure()
+    for j,(group,sub) in enumerate(table.groupby('cluster',sort=True)):
+        f.add_trace(go.Scatter(x=sub.time_ms,y=sub.blockade_nA,mode='lines',line=dict(color=PALETTE[j%len(PALETTE)],width=1.7),name=f'Cluster {group} · event {sub.event_id.iloc[0]}'))
+    f.update_layout(xaxis_title='Time from detected event start (ms)',yaxis_title='Current blockade (nA)',height=420)
+    return f

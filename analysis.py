@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.4.0'
+VERSION='0.4.1'
 @dataclass
 class Event:
     index:int
@@ -315,7 +315,7 @@ def _feature_space(features,n_components=None,variance_threshold=None,correlatio
         for j in range(len(idx)):
             if not chosen or all(abs(corr[j,h])<correlation_threshold for h in chosen):chosen.append(j)
         reduced=np.zeros_like(keep);reduced[idx[chosen]]=True;keep=reduced
-    if keep.sum()<2:raise ValueError('Need at least two non-constant, non-redundant clustering features.')
+    if keep.sum()<1:raise ValueError('Need at least one non-constant clustering feature after pruning.')
     scaler=StandardScaler();scaled=scaler.fit_transform(x[:,keep])
     full=PCA().fit(scaled);max_nc=min(scaled.shape[1],len(scaled)-1)
     if variance_threshold is not None:
@@ -400,7 +400,7 @@ def auto_cluster_features(features,profiles,method='PCA + agglomerative (DNA con
                 stability[k].append(float(adjusted_rand_score(candidate_labels[k][idx],sublabels)))
             except ValueError:pass
     for r in rows:
-        vals=stability[r['k']];r['stability']=float(np.mean(vals)) if vals else np.nan;r['stability_sd']=float(np.std(vals)) if vals else np.nan
+        vals=stability[r['k']];r['stability']=float(np.mean(vals)) if vals else np.nan;r['stability_sd']=float(np.std(vals)) if vals else np.nan;r['stability_successful_repeats']=len(vals)
     d=pd.DataFrame(rows).sort_values('k').reset_index(drop=True)
     rank_specs=[('silhouette',False),('calinski_harabasz',False),('davies_bouldin',True),('stability',False)]
     rank_cols=[]
@@ -413,11 +413,14 @@ def auto_cluster_features(features,profiles,method='PCA + agglomerative (DNA con
     chosen=d.sort_values(['consensus_rank','stability','silhouette','k'],ascending=[True,False,False,True]).iloc[0]
     selected_k=int(chosen['k']);result=_ordered_feature_result(full_space,profiles,selected_k,method,random_state)
     weak=[]
+    if int(chosen['stability_successful_repeats'])<int(stability_repeats):weak.append('some stability repeats unavailable')
+    if selected_k==k_max:weak.append('suggested k is at the upper search boundary; compare a wider range')
+    if int(chosen['min_cluster_size'])<max(5,int(np.ceil(.01*len(x)))):weak.append('a group contains very few events; inspect for outliers')
     if float(chosen['silhouette'])<.25:weak.append('low silhouette separation')
     if np.isfinite(chosen['stability']) and float(chosen['stability'])<.6:weak.append('low resampling stability')
     result.update(selected_k=selected_k,selection_table=d.to_dict('records'),selection_method='Weighted rank consensus: silhouette ×2, subsampling ARI stability ×2, Calinski-Harabasz ×1 and Davies-Bouldin ×1',
-        variance_threshold=float(variance_threshold),stability_repeats=int(stability_repeats),stability_fraction=float(stability_fraction),correlation_threshold=.98,
-        selection_warning=('Best candidate found, but cluster structure is weak: '+', '.join(weak)+'.') if weak else '')
+        variance_threshold=float(variance_threshold),stability_repeats=int(stability_repeats),stability_fraction=float(stability_fraction),stability_sample_size=int(n_sub),effective_stability_fraction=float(n_sub/len(x)),correlation_threshold=.98,
+        selection_warning=('Review suggested grouping: '+', '.join(weak)+'.') if weak else '')
     return result
 
 def cluster_dtw(profiles,k,shape_only=False,radius=4):

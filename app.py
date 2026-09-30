@@ -5,13 +5,29 @@ import plotly.express as px
 import streamlit as st
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,feature_table,cluster_features,auto_cluster_features,cluster_profiles,cluster_dtw,FEATURE_DESCRIPTIONS,safe_settings
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
-from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive
+from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
 st.title('DNA Event Lab')
 st.caption('Load → inspect → refine → plot → cluster → save')
 st.sidebar.title('Your analysis')
-step=st.sidebar.radio('Step',['1 · Load files','2 · Inspect events','3 · Refine and save fits','4 · Current–duration plots','5 · Cluster events','6 · Save clusters'])
+S=st.session_state
+STEPS=['1 · Load files','2 · Inspect events','3 · Refine and save fits','4 · Current–duration plots','5 · Cluster events','6 · Save clusters']
+step=st.sidebar.radio('Step',STEPS,key='workflow_step')
+
+def move_step(delta):
+    pos=STEPS.index(S.get('workflow_step',STEPS[0]))
+    S.workflow_step=STEPS[max(0,min(len(STEPS)-1,pos+delta))]
+
+def navigation(location):
+    pos=STEPS.index(step);left,middle,right=st.columns([1,2,1])
+    left.button('← Previous',on_click=move_step,args=(-1,),disabled=pos==0,key='previous_'+location)
+    middle.caption(f'Step {pos+1} of {len(STEPS)} · {step.split(" · ",1)[1]}')
+    ready=('project' in S and S.get('recording_confirmed',False))
+    if pos==4:ready=ready and S.get('group') is not None
+    right.button('Next →',on_click=move_step,args=(1,),disabled=pos==len(STEPS)-1 or not ready,key='next_'+location)
+
+navigation('top')
 st.sidebar.caption('Work with one recording at a time. Groups describe signal similarities; topology labels need physical validation.')
 S=st.session_state
 if st.sidebar.button('Clear files and start over'):
@@ -31,7 +47,7 @@ if 'project' in S:
 def show(fig,key):
     st.plotly_chart(scientific(fig),width='stretch',key=key,theme=None,config={'displaylogo':False,'toImageButtonOptions':{'format':'svg','filename':key,'width':900,'height':600}})
 
-def next_step(label):st.info('Next: select '+label+' in the left-hand menu.')
+def next_step(label):navigation('bottom')
 
 if step.startswith('1'):
     st.header('1 · Load the three files')
@@ -72,7 +88,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.4.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.4.1','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
 st.sidebar.caption('Unrefined events retain their uploaded fits.')
@@ -141,10 +157,10 @@ elif step.startswith('4'):
     next_step('5 · Cluster events')
 elif step.startswith('5'):
     st.header('5 · Cluster the events')
-    st.write('Automatic mode uses all available signal-derived event features, standardises them, retains enough PCA components to explain the requested variance, then chooses the cluster count from several diagnostics. Cluster numbers are signal groups, not DNA topology labels.')
+    st.write('Automatic mode uses all available signal-derived event features, standardises them, retains enough PCA components to explain the requested variance, then suggests a cluster count from several diagnostics. Cluster numbers are signal groups, not DNA topology labels.')
     cfg=S.get('cluster_config',{})
     source_options=['Selected fits','Measured trace'];source=st.radio('Signal used for clustering',source_options,index=source_options.index(cfg.get('source','Selected fits')) if cfg.get('source','Selected fits') in source_options else 0,horizontal=True)
-    methods=['Automatic PCA + agglomerative (recommended)','PCA + agglomerative (manual)','PCA + k-means (manual)','Waveform k-means (manual)','Time-series k-means (DTW, manual)']
+    methods=['Automatic PCA + agglomerative (exploratory)','PCA + agglomerative (manual)','PCA + k-means (manual)','Waveform k-means (manual)','Time-series k-means (DTW, manual)']
     previous=cfg.get('algorithm',methods[0]);algorithm=st.selectbox('Method',methods,index=methods.index(previous) if previous in methods else 0)
     is_feature=algorithm.startswith('Automatic') or algorithm.startswith('PCA')
     is_auto=algorithm.startswith('Automatic')
@@ -159,7 +175,7 @@ elif step.startswith('5'):
             kmax=c1.slider('Maximum clusters to test',3,10,int(kmax))
             variance_pct=c2.slider('PCA variance retained (%)',80,99,int(variance_pct))
             repeats=c3.select_slider('Stability repeats',options=[4,6,8,10,12],value=int(repeats) if int(repeats) in [4,6,8,10,12] else 6)
-            st.caption(f'Automatic search tests k = 2…{kmax}. It ranks silhouette ↑, Calinski–Harabasz ↑, Davies–Bouldin ↓ and subsampling stability ↑, with extra weight on silhouette and stability. PCA keeps the smallest number of components explaining at least {variance_pct}% of scaled-feature variance.')
+            st.caption(f'Automatic search tests k = 2…{kmax}; it cannot establish that separate populations exist. It ranks silhouette ↑, Calinski–Harabasz ↑, Davies–Bouldin ↓ and subsampling stability ↑, with extra weight on silhouette and stability. PCA keeps the smallest number of components explaining at least {variance_pct}% of scaled-feature variance.')
         else:
             c1,c2=st.columns(2);k=c1.slider('Number of clusters',2,10,int(k));npc=c2.slider('PCA components',1,max(1,min(10,len(fields))),min(int(npc),max(1,min(10,len(fields)))))
     else:
@@ -168,7 +184,7 @@ elif step.startswith('5'):
         bins=st.select_slider('Waveform positions',[16,32,64],value=bins if bins in [16,32,64] else 32)
         if 'DTW' in algorithm:radius=st.slider('DTW alignment radius',1,16,int(radius))
         if is_feature:
-            st.caption('Feature values are z-score standardised before PCA. Constant features and near-duplicate features (|r| ≥ 0.98 in automatic mode) are removed before PCA so one physical property is not counted repeatedly.')
+            st.caption('Optional wavelet summaries are exploratory and depend on sampling and fitted shape. Compare with a custom set of physical descriptors. Feature values are z-score standardised before PCA. Constant features and near-duplicate features (|r| ≥ 0.98 in automatic mode) are removed before PCA so one physical property is not counted repeatedly.')
             st.json({f:FEATURE_DESCRIPTIONS[f] for f in fields})
         else:st.caption('Waveform methods compare duration-normalised profiles while retaining blockade depth. DTW permits local time alignment.')
     S.cluster_config=dict(source=source,algorithm=algorithm,k=k,fields=fields,npc=npc,bins=bins,radius=radius,kmax=kmax,variance_pct=variance_pct,repeats=repeats,feature_scope=feature_scope)
@@ -195,7 +211,11 @@ elif step.startswith('5'):
                     if col!='event_index':table['clustering_'+col]=feat[col].to_numpy()
                 clustering_meta={'source':source,'method':algorithm,'k':selected_k,'selection':'automatic' if is_auto else 'manual','features':fields if is_feature else [],
                     'pca_components':info.get('n_components',npc if is_feature else None),'pca_variance_target':variance_pct/100 if is_auto else None,
-                    'positions':bins,'dtw_radius':radius,'automatic_k_range':[2,kmax] if is_auto else None,'stability_repeats':repeats if is_auto else None}
+                    'positions':bins,'dtw_radius':radius,'automatic_k_range':[2,kmax] if is_auto else None,'stability_repeats':repeats if is_auto else None,
+                    'retained_features':[f for f,keep in zip(fields,info.get('feature_keep_mask',[True]*len(fields))) if keep] if is_feature else [],
+                    'feature_mean':info.get('feature_mean'),'feature_scale':info.get('feature_scale'),'pca_loadings':info.get('loadings'),
+                    'diagnostics':info.get('selection_table'),'selection_method':info.get('selection_method'),'selection_warning':info.get('selection_warning'),
+                    'stability_sample_size':info.get('stability_sample_size'),'effective_stability_fraction':info.get('effective_stability_fraction')}
                 S.group={'signature':signature,'table':table,'info':info,'meta':{**meta,'clustering':clustering_meta}}
                 S.pop('prepared',None)
         except Exception as ex:st.error(str(ex))
@@ -205,16 +225,16 @@ elif step.startswith('5'):
     if g:
         info=g['info'];table=g['table'];selected_k=len(np.unique(info['labels']))
         if info.get('selected_k') is not None:
-            st.success(f'Automatic selection chose {selected_k} clusters for {len(table)} events using {source.lower()}.')
+            st.success(f'Automatic search suggests {selected_k} clusters for {len(table)} events using {source.lower()}.')
             st.caption(info.get('selection_method',''))
             if info.get('selection_warning'):st.warning(info['selection_warning'])
         else:st.success(f'{len(table)} events grouped into {selected_k} clusters using {source.lower()}.')
-        st.dataframe(table.groupby('cluster').size().rename('Events').to_frame())
-        scatter,_,dropped,*_=distribution_figures(table,'duration_ms','mean_blockade_nA',True,False,color='cluster');show(scatter,'clusters_physical')
-        st.caption('This physical scatter always shows measured duration and mean blockade, coloured by the cluster assignment, even when selected fits drove the clustering.')
+        summary=table.groupby('cluster').agg(Events=('event_index','size'),Median_duration_ms=('duration_ms','median'),Median_mean_blockade_nA=('mean_blockade_nA','median'),Median_peak_blockade_nA=('peak_blockade_nA','median'))
+        summary['Fraction']=summary.Events/len(table)
+        st.dataframe(summary)
+        st.caption('Summary measurements above come from the measured traces. Compare these with the selected-signal profiles and original event traces below.')
         show(profile_figure(info['profiles'],info['labels'],info['centers']),'cluster_profiles')
         st.caption('Profile bands are member 10th–90th percentiles, not uncertainty in the mean. Group IDs are ordered by increasing mean profile blockade for feature clustering.')
-        emb=pd.DataFrame(info['embedding'],columns=['PC1','PC2']);emb['Cluster']=info['labels'].astype(str);show(px.scatter(emb,x='PC1',y='PC2',color='Cluster'),'cluster_projection')
         if g['meta']['clustering']['features'] and 'loadings' in info:
             kept=[f for f,keep in zip(g['meta']['clustering']['features'],info.get('feature_keep_mask',[True]*len(g['meta']['clustering']['features']))) if keep]
             loads=np.asarray(info['loadings']);pcs=min(2,len(loads));rows=[]
@@ -223,16 +243,18 @@ elif step.startswith('5'):
                 for name,value in zip(kept,loads[j]):rows.append({'Feature':name.replace('_',' ').replace(' nA','').title(),'Loading':value,'PC':f'PC{j+1} ({var:.1f}%)'})
             if rows:
                 loadfig=px.bar(pd.DataFrame(rows),x='Loading',y='Feature',color='PC',barmode='group',orientation='h',title='What drives the PCA separation?')
-                show(loadfig,'pca_loadings')
-                st.caption('Large positive or negative loadings indicate features that contribute strongly to that principal component. Loading sign is arbitrary; magnitude is what matters.')
+                with st.expander('Which features contribute to the PCA coordinates?'):
+                    show(loadfig,'pca_loadings')
+                    st.caption('Loading size describes contribution to a coordinate, not proof that the feature separates physical populations. The overall sign of a component is arbitrary; relative signs describe relationships between features.')
         if info.get('selection_table'):
-            with st.expander('Why was this number of clusters selected?',expanded=True):
+            with st.expander('Why was this number of clusters selected?',expanded=False):
                 diag=pd.DataFrame(info['selection_table']);display=diag[['k','silhouette','calinski_harabasz','davies_bouldin','stability','stability_sd','min_cluster_size','consensus_rank']].copy()
                 display.columns=['k','Silhouette ↑','Calinski–Harabasz ↑','Davies–Bouldin ↓','Stability ARI ↑','Stability SD','Smallest cluster','Consensus rank ↓']
                 st.dataframe(display.round(4),hide_index=True)
                 dplot=diag.melt(id_vars='k',value_vars=['silhouette','stability'],var_name='Diagnostic',value_name='Score')
                 show(px.line(dplot,x='k',y='Score',color='Diagnostic',markers=True),'automatic_cluster_diagnostics')
-                st.caption('The chosen k has the best weighted rank consensus across four diagnostics, with silhouette and stability weighted twice. This is a reproducible, predefined signal-structure criterion, not proof that the groups are distinct DNA topologies.')
+                st.caption(f'Stability uses {info.get("stability_sample_size","—")} events per repeat ({100*info.get("effective_stability_fraction",.8):.1f}% of this recording), capped at 600. Repeats refit preprocessing and clustering.')
+                st.caption('The suggested k has the best weighted rank consensus across four diagnostics, with silhouette and stability weighted twice. This is a reproducible, predefined signal-structure criterion, not proof that the groups are distinct DNA topologies.')
         with st.expander('Numerical diagnostics'):
             st.write('Silhouette:',info.get('silhouette'))
             if 'calinski_harabasz' in info:st.write('Calinski–Harabasz:',info['calinski_harabasz'])
@@ -242,8 +264,8 @@ elif step.startswith('5'):
             st.caption('These scores measure geometric separation and stability. They do not establish physical identity or topology accuracy.')
         cluster=st.selectbox('View traces from cluster',sorted(table.cluster.unique()));ids=table.loc[table.cluster==cluster,'event_index'].tolist()
         eid=st.selectbox('Event in this cluster',ids);e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
-        if st.button('Prepare cluster publication figures'):S.cluster_figures=(signature,figure_archive(table,'duration_ms','mean_blockade_nA',True,'cluster'))
-        if S.get('cluster_figures') and S.cluster_figures[0]==signature:st.download_button('Save cluster PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_figures.zip')
+        if st.button('Prepare cluster profile figures'):S.cluster_figures=(signature,profile_archive(info['profiles'],info['labels'],info['centers']))
+        if S.get('cluster_figures') and S.cluster_figures[0]==signature:st.download_button('Save profile PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_profiles.zip')
         next_step('6 · Save clusters')
 elif step.startswith('6'):
     st.header('6 · Save cluster data')
@@ -264,3 +286,5 @@ elif step.startswith('6'):
     if S.get('prepared') and S.prepared[0]==key:st.download_button('Save cluster files ZIP',S.prepared[1],'cluster_files.zip','application/zip')
     st.write('Each cluster contains its selected eventfitting file, matched eventdata and dataset files, event table and analysis settings. Uploaded fits are also retained inside the new fitting file.')
     st.caption('Dataset rows are preserved as uploaded; they are not recalculated after refinement. Updated clustering measurements are in the CSV. Files reload in this app; compatibility with NanoSense re-import is not established.')
+
+    navigation("bottom")

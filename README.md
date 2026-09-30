@@ -1,6 +1,6 @@
-# DNA Event Lab · 0.4
+# DNA Event Lab · 0.4.1
 
-A guided Streamlit workflow for inspecting DNA nanopore events, refining fits, plotting physical distributions, automatically discovering signal groups, and exporting event subsets. No synthetic demonstration or power spectral density is included in the interface.
+A guided Streamlit workflow for inspecting DNA nanopore events, refining fits, plotting physical distributions, suggesting candidate signal groups, and exporting event subsets. No synthetic demonstration or power spectral density is included in the interface.
 
 ## Update your existing app
 
@@ -41,14 +41,14 @@ The clustering pipeline is:
 
 `event features → remove constants / near-duplicates → z-score standardise → PCA → test k → agglomerative clustering`
 
-Near-duplicate selected features with absolute Pearson correlation `|r| >= 0.98` are pruned in automatic mode so nearly identical descriptors do not repeatedly weight the same physical property. PCA then retains the **smallest number of components reaching the requested cumulative explained variance** (95% by default). The PC1/PC2 plot is only a visual projection; clustering uses every retained PC.
+Near-duplicate selected features with absolute Pearson correlation `|r| >= 0.98` are pruned in automatic mode so nearly identical descriptors do not repeatedly weight the same physical property. PCA then retains the **smallest number of components reaching the requested cumulative explained variance** (95% by default). Clustering uses every retained PC. Cluster scatter and PCA scatter displays have been removed from step 5; profiles, measured summaries and original traces are the main results.
 
 Automatic mode tests `k = 2 ... kmax` (default `kmax = 8`). Each candidate is evaluated using:
 
 - **Silhouette score** — higher is better.
 - **Calinski–Harabasz score** — higher is better.
 - **Davies–Bouldin score** — lower is better.
-- **Subsampling stability** — adjusted Rand index (ARI) comparing the full-data grouping with repeated 80% subsamples that re-fit scaling, PCA and clustering.
+- **Subsampling stability** — adjusted Rand index (ARI) comparing the full-data grouping with repeated subsamples (target 80%, capped at 600 events) that re-fit scaling, PCA and clustering. The interface reports the actual fraction.
 
 The selected cluster count uses a weighted rank consensus: silhouette ×2, stability ×2, Calinski–Harabasz ×1 and Davies–Bouldin ×1. The weighting intentionally gives more importance to direct separation and reproducibility than to any single compactness statistic. The app shows the full diagnostic table instead of hiding the selection process.
 
@@ -56,7 +56,7 @@ If the selected solution has a silhouette below 0.25 or resampling stability bel
 
 ## PCA interpretation
 
-The app now displays a PCA loading plot for feature-based clustering. Large absolute loadings identify which original event descriptors contribute most strongly to PC1 and PC2. The sign of a PCA loading is arbitrary; its magnitude and relationships across features are the useful parts.
+An optional expandable PCA loading plot is available for feature-based clustering. Large absolute loadings identify which original event descriptors contribute most strongly to PC1 and PC2. The overall sign of a component is arbitrary; relative loading signs and magnitudes describe how features combine.
 
 Feature clustering uses standardised values. Therefore a large loading is not simply caused by a feature having units with larger numerical values. Constant and automatically pruned redundant columns are omitted from the loading plot.
 
@@ -64,7 +64,7 @@ Feature clustering uses standardised values. Therefore a large loading is not si
 
 The output groups are **unsupervised signal families, not automatic DNA topology labels**. Linear, folded, complex or other physical interpretations still require inspection of representative current traces and consistency across experimental conditions.
 
-The physical duration-versus-mean-blockade plot always uses measured event quantities even if selected fits drive clustering. This makes it possible to see what the machine-derived grouping looks like in experimentally familiar coordinates.
+Step 4 retains the uncoloured current–duration distribution. Step 5 uses a cluster summary table with measured durations and blockades, member profiles and original event traces. Profile downloads contain PDF, SVG, PNG and numeric summaries.
 
 Cluster IDs are ordered by increasing mean waveform blockade for feature clustering so Group 0 is the shallowest mean profile. IDs are still labels, not biological categories.
 
@@ -85,3 +85,9 @@ python -m py_compile analysis.py app.py workflow.py plots.py
 ```
 
 `check_app.py` is the integration test for the supplied private NanoSense fixture files. It expects those three sample exports in the same `upload` fixture location used by the previous version; experimental data are not bundled here.
+
+## Review and navigation update
+
+Previous/Next arrow buttons appear above each step and at the bottom of completed steps. Files and analysis remain in the same session. Next from loading requires a confirmed recording; Next from clustering requires a computed grouping. The sidebar remains available for direct navigation.
+
+Automatic mode is labelled exploratory. It suggests the best weighted-rank candidate among k=2…kmax and cannot test the one-population case. Extra warnings flag missing stability repeats, upper-boundary choices and very small groups. Score weights and warning thresholds are explicit heuristics. Scaling/PCA parameters, retained feature names, diagnostic tables and effective subsample fraction are now included in provenance. See CLUSTERING_REVIEW.md for scientific interpretation and limitations.

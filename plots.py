@@ -102,3 +102,30 @@ def figure_archive(table,x,y,logx=False,color=None):
             z.writestr('plotted_events.csv',d.to_csv(index=False))
             z.writestr('README.txt',f'Scatter and event-count heatmap. {len(d)} plotted, {len(table)-len(d)} omitted. x={x}, y={y}, log x={logx}. SVG/PDF vector exports; PNG 600 dpi. Heatmap uses 45 bins per axis. No smoothing or spectral density. CSV contains the plotted rows.\n')
     return out.getvalue()
+
+
+def profile_archive(profiles,labels,centers):
+    """Export member bands and representative profiles without scatter plots."""
+    import io,zipfile
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    profiles=np.asarray(profiles);labels=np.asarray(labels);centers=np.asarray(centers)
+    phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1]
+    out=io.BytesIO();rows=[]
+    with plt.rc_context({'font.family':'sans-serif','font.size':10,'axes.linewidth':.8,'svg.fonttype':'none','pdf.fonttype':42,'xtick.direction':'out','ytick.direction':'out'}):
+        fig,ax=plt.subplots(figsize=(5.6,4.2),layout='constrained')
+        for j,center in enumerate(centers):
+            members=profiles[labels==j];lo,hi=np.percentile(members,[10,90],axis=0);color=PALETTE[j%len(PALETTE)]
+            ax.fill_between(phase,lo,hi,color=color,alpha=.12)
+            ax.plot(phase,center,color=color,lw=1.5,label=f'Cluster {j} (n={len(members)})')
+            for pos,t in enumerate(phase):rows.append({'cluster':j,'phase':t,'representative_blockade_nA':center[pos],'p10_nA':lo[pos],'p90_nA':hi[pos],'events':len(members)})
+        ax.set_xlabel('Fraction of event duration');ax.set_ylabel('Current blockade (nA)');ax.legend(frameon=False,fontsize=8)
+        with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+            for ext in ['pdf','svg','png']:
+                b=io.BytesIO();fig.savefig(b,format=ext,dpi=600);z.writestr('cluster_profiles.'+ext,b.getvalue())
+            z.writestr('profile_summary.csv',pd.DataFrame(rows).to_csv(index=False))
+            z.writestr('README.txt','Profiles from the selected clustering signal. Bands are 10th–90th member percentiles, not confidence intervals. For DTW the representative curves are aligned barycentres while percentile bands use unwarped profiles. Absolute duration is removed from these profiles; amplitude is retained.\n')
+        plt.close(fig)
+    return out.getvalue()

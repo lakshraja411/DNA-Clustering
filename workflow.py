@@ -27,7 +27,7 @@ def match_raw(events,raw,tolerance):
     x=np.array([[e.bounds[0]] for e in raw]);mapping,status=link_dataset(events,x,0,tolerance)
     return {i:raw[row] for i,row in mapping.items()},status
 
-def bundle(events,rawmap,refs,dataset,mapping,settings,dsettings,table,meta):
+def bundle(events,rawmap,refs,dataset,mapping,settings,dsettings,table,meta,sequences=None):
     ids={e.index for e in events};rows=[mapping[e.index] for e in events if e.index in mapping];matched=[e.index for e in events if e.index in mapping]
     out=io.BytesIO()
     with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
@@ -36,5 +36,6 @@ def bundle(events,rawmap,refs,dataset,mapping,settings,dsettings,table,meta):
         z.writestr('selected.eventdata.npz',pack_events(raw,{},meta))
         z.writestr('selected.dataset.npz',npz_bytes({'X':dataset[rows],'original_dataset_rows':np.array(rows,int),'fitting_event_ids':np.array(matched,int),'settings':np.array(json.dumps(safe_settings(dsettings)))}))
         z.writestr('event_results.csv',table.to_csv(index=False));z.writestr('provenance.json',json.dumps(meta,indent=2))
+        if sequences is not None and len(sequences):z.writestr('resolved_levels.csv',sequences[sequences.event_index.isin([e.index for e in events])].to_csv(index=False))
         z.writestr('README.txt','Selected fits are the active fits in selected.eventfitting.npz; INPUT_FIT_* preserves uploaded fits. Measured traces are unchanged. selected.eventdata.npz uses the numeric Shape Lab layout and preserves source raw-event IDs. Dataset X rows are original and are NOT recalculated from refined fits. CSV contains current measured results and selected-fit features. Mapping appears in CSV. Reload supported in Shape Lab; NanoSense re-import compatibility is not established.\n')
     return out.getvalue()

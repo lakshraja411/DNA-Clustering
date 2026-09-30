@@ -54,6 +54,9 @@ assert at.session_state['group']['meta']['clustering']['source']=='Selected fits
 assert at.session_state['group']['meta']['clustering']['selection']=='automatic'
 assert 2<=at.session_state['group']['meta']['clustering']['k']<=8
 assert at.session_state['group']['info']['selection_table']
+assert at.session_state['group']['meta']['clustering']['feature_set']=='Physical level features'
+assert len(at.session_state['group']['sequences'])
+g=at.session_state['group'];assert len(g['table'])+len(g['excluded'])==len(small)
 assert any(h.value=='PC1–PC2 view of the event groups' for h in at.subheader)
 button('Prepare combined publication figure').click().run();assert not at.exception
 with zipfile.ZipFile(io.BytesIO(at.session_state['publication_figure'][1])) as z:
@@ -64,6 +67,11 @@ next(b for b in at.button if b.key=='next_bottom').click().run();assert not at.e
 assert at.sidebar.radio[0].value.startswith('6')
 button('Prepare cluster files').click().run();assert not at.exception
 assert at.session_state['prepared'][1]
+with zipfile.ZipFile(io.BytesIO(at.session_state['prepared'][1])) as outer:
+ for name in outer.namelist():
+  if name.startswith('cluster_') and name.endswith('.zip'):
+   with zipfile.ZipFile(io.BytesIO(outer.read(name))) as inner:assert 'resolved_levels.csv' in inner.namelist()
+ if len(g['excluded']):assert 'unresolved_events.zip' in outer.namelist()
 step(5);assert at.session_state['group']
 next(w for w in at.slider if w.label=='Maximum clusters to test').set_value(7).run();assert not at.exception
 assert 'group' not in at.session_state

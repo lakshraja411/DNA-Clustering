@@ -1,3 +1,27 @@
+# DNA Event Lab 0.5.0
+
+Replace all application files in your GitHub repository with the files in this folder, including the new `physical.py`. Keep `app.py` as your Streamlit entry point. Commit the changes, then reboot your Streamlit app if it has not refreshed.
+
+## Physical features
+
+PCA clustering now defaults to physical level features:
+
+- Deepest sustained plateau blockade, or its ratio to a supplied calibrated single-file reference.
+- Number of resolved transitions between adjacent plateaus.
+- Signed end-to-start level change divided by the resolved height range (zero for a single level).
+- Optional fraction of duration above a user-defined deeper-blockade threshold.
+- Optional event duration.
+
+Selected step fits supply the boundaries. Selected-fit mode uses fitted plateau heights; measured-trace mode uses measured sample means within those same boundaries. Adjacent heights merge at the larger of the absolute height threshold and noise multiplier times a robust noise scale (padding MAD, or first-difference MAD when padding is insufficient). The default settings are provisional analysis choices; adjust for instrument bandwidth and sampling. Minimum plateau duration is at least three sampling intervals. Continuous, missing or unresolved fits are excluded from this model rather than assigned fabricated plateau features. Use step refinement to review those events.
+
+Eligibility is visible before clustering. Feature audit CSV includes resolution settings and exclusion reasons. Each physical cluster exports ordered resolved levels; the combined download also includes excluded traces, fits and available dataset rows. Duration-normalised waveform/DTW methods and legacy features remain available for comparison. Changing settings invalidates stale cluster results.
+
+No descriptor proves a fold, strand count or DNA topology. Calibrate any reference and threshold for the recording conditions. Threshold-sensitive events are flagged; compare alternative thresholds and inspect the raw signals. Automatic k selection remains exploratory and does not test whether a single population would suffice.
+
+Run `python check_physical.py` for known-level extraction checks. `python check_app.py` additionally uses the supplied recording in the sibling upload folder to check matching, UI, preservation and exports.
+
+---
+
 # DNA Event Lab · 0.4.3
 
 A guided Streamlit workflow for inspecting DNA nanopore events, refining fits, plotting physical distributions, suggesting candidate signal groups, and exporting event subsets. No synthetic demonstration or power spectral density is included in the interface.
@@ -22,9 +46,9 @@ python -m streamlit run app.py
 5. **Cluster events:** automatic feature clustering is now the default. The app can still run manual PCA + agglomerative, PCA + k-means, waveform k-means and DTW time-series k-means.
 6. **Save clusters:** export assignments and one or all event groups with their fitting, eventdata and dataset subsets plus provenance.
 
-## Automatic clustering in v0.4
+## Automatic clustering and legacy comparison
 
-Automatic mode uses **all available continuous signal-derived event features by default**:
+The optional **Legacy features (comparison)** mode offers the following signal-derived features:
 
 - duration
 - mean blockade
@@ -41,7 +65,7 @@ The clustering pipeline is:
 
 `event features → remove constants / near-duplicates → z-score standardise → PCA → test k → agglomerative clustering`
 
-Near-duplicate selected features with absolute Pearson correlation `|r| >= 0.98` are pruned in automatic mode so nearly identical descriptors do not repeatedly weight the same physical property. PCA then retains the **smallest number of components reaching the requested cumulative explained variance** (95% by default). Clustering uses every retained PC. Cluster scatter and PCA scatter displays have been removed from step 5; profiles, measured summaries and original traces are the main results.
+Near-duplicate selected features with absolute Pearson correlation `|r| >= 0.98` are pruned in automatic mode so nearly identical descriptors do not repeatedly weight the same physical property. PCA then retains the **smallest number of components reaching the requested cumulative explained variance** (95% by default). Clustering uses every retained PC. The PC1–PC2 view accompanies profiles, measured summaries and original traces in step 5.
 
 Automatic mode tests `k = 2 ... kmax` (default `kmax = 8`). Each candidate is evaluated using:
 

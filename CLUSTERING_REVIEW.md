@@ -1,3 +1,7 @@
+# Version 0.5 addendum
+
+The review below describes the previous legacy-feature engine. Version 0.5 defaults to resolved physical level descriptors; its extraction checks validate signal calculations, not topology assignments. Resolution settings and calibrated thresholds require experimental justification. Exclusions alter the analysed population and must be reported. No full-recording physical clustering accuracy benchmark was performed.
+
 # Review of the uploaded clustering logic
 
 The implemented sequence is coherent for exploratory unsupervised grouping: extract event descriptors, remove uninformative/redundant columns, standardise, retain PCA coordinates and apply Ward clustering. Candidate cluster counts are compared using internal geometry and subsampling reproducibility. This is a candidate signal-grouping method; topology accuracy has not been established.

@@ -3,7 +3,6 @@ from dataclasses import dataclass
 import io, json, re, zipfile
 import numpy as np
 import pandas as pd
-from scipy import optimize
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
@@ -140,33 +139,26 @@ def refine(e,method='Segment means',min_duration_us=25.,penalty=8.):
     m=mask(e);idx=np.flatnonzero(m);y=(e.baseline-e.current)[m];n=len(y);dt=float(np.median(np.diff(e.time)))
     if n>6000:raise ValueError('Refinement is limited to 6,000 event samples per event for responsiveness.')
     fitted=e.baseline.copy();params={}
-    if method=='Rounded pulse (Gaussian)':
-        t=e.time[m]-e.bounds[0];duration=float(np.diff(e.bounds)[0]);amp=max(float(y.max()),1e-6)
-        def fun(t,a,mu,sigma):return a*np.exp(-.5*((t-mu)/sigma)**2)
-        p,_=optimize.curve_fit(fun,t,y,p0=[amp,float(t[np.argmax(y)]),max(duration/6,dt)],
-                 bounds=([0,0,dt/2],[amp*5,duration,duration*2]),maxfev=3000)
-        yf=fun(t,*p);levels=np.array([]);widths=np.array([])
-        params=dict(amplitude_nA=float(p[0]),center_ms=float(p[1]*1000),sigma_ms=float(p[2]*1000))
-    else:
-        if method=='Segment means':
-            if e.fit is None:raise ValueError('Segment-means refinement needs an existing fit. Choose PELT for an unfitted trace.')
-            existing=(e.baseline-e.fit)[m];ends=np.r_[np.flatnonzero(np.abs(np.diff(existing))>1e-9)+1,n]
-        elif method=='New levels (PELT)':
-            import ruptures as rpt
-            ms=max(2,int(np.ceil(min_duration_us*1e-6/dt)))
-            pad=(e.baseline-e.current)[~m]
-            noise=float(np.std(pad)) if len(pad)>3 else float(np.std(np.diff(y))/np.sqrt(2))
-            noise=max(noise,float(np.std(y))*1e-3,1e-6)
-            ends=[n] if n<2*ms else rpt.Pelt(model='l2',min_size=ms,jump=1).fit(y/noise).predict(pen=float(penalty)*np.log(max(n,2)))
-            params=dict(min_duration_us=min_duration_us,penalty_multiplier=penalty,noise_scale_nA=noise)
-        else:raise ValueError('Unknown method')
-        yf=np.empty(n);levels=[];widths=[];start=0
-        for end in ends:
-            level=float(y[start:end].mean());yf[start:end]=level;levels.append(level)
-            left=e.bounds[0] if start==0 else e.time[idx[start]]
-            right=e.bounds[1] if end==n else e.time[idx[end]]
-            widths.append(float(right-left));start=end
-        levels=np.array(levels);widths=np.array(widths)
+    if method=='Segment means':
+        if e.fit is None:raise ValueError('Segment-means refinement needs an existing fit. Choose PELT for an unfitted trace.')
+        existing=(e.baseline-e.fit)[m];ends=np.r_[np.flatnonzero(np.abs(np.diff(existing))>1e-9)+1,n]
+    elif method=='New levels (PELT)':
+        import ruptures as rpt
+        ms=max(2,int(np.ceil(min_duration_us*1e-6/dt)))
+        pad=(e.baseline-e.current)[~m]
+        noise=float(np.std(pad)) if len(pad)>3 else float(np.std(np.diff(y))/np.sqrt(2))
+        noise=max(noise,float(np.std(y))*1e-3,1e-6)
+        ends=[n] if n<2*ms else rpt.Pelt(model='l2',min_size=ms,jump=1).fit(y/noise).predict(pen=float(penalty)*np.log(max(n,2)))
+        params=dict(min_duration_us=min_duration_us,penalty_multiplier=penalty,noise_scale_nA=noise)
+    else:raise ValueError('Unknown refinement method')
+
+    yf=np.empty(n);levels=[];widths=[];start=0
+    for end in ends:
+        level=float(y[start:end].mean());yf[start:end]=level;levels.append(level)
+        left=e.bounds[0] if start==0 else e.time[idx[start]]
+        right=e.bounds[1] if end==n else e.time[idx[end]]
+        widths.append(float(right-left));start=end
+    levels=np.array(levels);widths=np.array(widths)
     fitted[m]=e.baseline[m]-yf
     return dict(fit=fitted,levels=levels,widths=widths,method=method,parameters=params)
 

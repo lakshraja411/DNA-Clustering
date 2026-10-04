@@ -66,7 +66,7 @@ def scientific(fig):
     fig.update_coloraxes(colorbar_tickfont_color='#18232b',colorbar_title_font_color='#18232b')
     return fig
 
-def figure_archive(table,x,y,logx=False,color=None):
+def figure_archive(table,x,y,logx=False,color=None,bins=45):
     import io,zipfile
     import matplotlib
     matplotlib.use('Agg')
@@ -89,10 +89,10 @@ def figure_archive(table,x,y,logx=False,color=None):
                 else:
                     lo,hi=d[x].min(),d[x].max()
                     if lo==hi:lo,hi=(lo*.9,hi*1.1) if logx else (lo-.5,hi+.5)
-                    xe=np.geomspace(lo,hi,46) if logx else np.linspace(lo,hi,46)
+                    xe=np.geomspace(lo,hi,bins+1) if logx else np.linspace(lo,hi,bins+1)
                     lo,hi=d[y].min(),d[y].max()
                     if lo==hi:lo,hi=lo-.5,hi+.5
-                    ye=np.linspace(lo,hi,46);h,_,_=np.histogram2d(d[x],d[y],bins=[xe,ye])
+                    ye=np.linspace(lo,hi,bins+1);h,_,_=np.histogram2d(d[x],d[y],bins=[xe,ye])
                     mesh=ax.pcolormesh(xe,ye,h.T,cmap='viridis',shading='flat');fig.colorbar(mesh,ax=ax,label='Events per bin')
                 if logx:ax.set_xscale('log')
                 ax.set_xlabel(LABELS.get(x,x));ax.set_ylabel(LABELS.get(y,y))
@@ -100,7 +100,7 @@ def figure_archive(table,x,y,logx=False,color=None):
                     b=io.BytesIO();fig.savefig(b,format=ext,dpi=600);z.writestr(kind+'.'+ext,b.getvalue())
                 plt.close(fig)
             z.writestr('plotted_events.csv',d.to_csv(index=False))
-            z.writestr('README.txt',f'Scatter and event-count heatmap. {len(d)} plotted, {len(table)-len(d)} omitted. x={x}, y={y}, log x={logx}. SVG/PDF vector exports; PNG 600 dpi. Heatmap uses 45 bins per axis. No smoothing or spectral density. CSV contains the plotted rows.\n')
+            z.writestr('README.txt',f'Scatter and event-count heatmap. {len(d)} plotted, {len(table)-len(d)} omitted. x={x}, y={y}, log x={logx}. SVG/PDF vector exports; PNG 600 dpi. Heatmap uses {bins} bins per axis. No smoothing or spectral density. CSV contains the plotted rows.\n')
     return out.getvalue()
 
 

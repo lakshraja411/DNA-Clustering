@@ -236,8 +236,8 @@ if step.startswith('2'):
 elif step.startswith('3'):
     st.header('3 · Refine and save fits')
     st.write('Try one event first. Review its fit before applying the method to all events. Uploaded files are never overwritten.')
-    e=choose_event();method=st.selectbox('Refinement method',['Segment means','New levels (PELT)','Rounded pulse (Gaussian)'])
-    st.caption({'Segment means':'Keep the existing step boundaries and recalculate the level heights.','New levels (PELT)':'Find new step boundaries; the penalty controls how readily another step is added.','Rounded pulse (Gaussian)':'Fit one smooth pulse. Use for single rounded events, not multilevel events.'}[method])
+    e=choose_event();method=st.selectbox('Refinement method',['Segment means','New levels (PELT)'])
+    st.caption({'Segment means':'Keep the existing step boundaries and recalculate the level heights.','New levels (PELT)':'Find new step boundaries; the penalty controls how readily another step is added.'}[method])
 
     with st.expander('Advanced refinement settings',expanded=method=='New levels (PELT)'):
         minimum=st.number_input('Minimum step duration (µs)',5.,10000.,25.,step=5.,disabled=method!='New levels (PELT)')
@@ -408,12 +408,14 @@ elif step.startswith('4'):
     except ValueError as ex:st.warning(str(ex));st.stop()
     height=st.selectbox('Blockade measurement',['mean_blockade_nA','peak_blockade_nA'],format_func=lambda x:LABELS[x])
     logx=st.checkbox('Logarithmic duration axis',True)
-    scatter,heat,dropped,*_=distribution_figures(table,'duration_ms',height,logx,False)
+    bins=st.slider('Heatmap bins per axis',10,100,45,5,
+                   help='Controls the visual resolution of the 2D event-count histogram only. It does not alter the underlying event measurements.')
+    scatter,heat,dropped,*_=distribution_figures(table,'duration_ms',height,logx,False,bins=bins)
     show(scatter,'current_duration');show(heat,'event_counts')
-    st.caption(f'{len(table)-dropped} events plotted; {dropped} omitted because values are incompatible with the axes. Colour in the heatmap is events per bin. Data source: {source}.')
+    st.caption(f'{len(table)-dropped} events plotted; {dropped} omitted because values are incompatible with the axes. Heatmap resolution: {bins} × {bins} bins. Colour is the number of events per bin. Data source: {source}.')
     st.download_button('Save plotted measurements CSV',table.to_csv(index=False),'current_duration.csv')
-    if st.button('Prepare publication figures'):S.figures=(p['fingerprint'],refhash,source,height,logx,figure_archive(table,'duration_ms',height,logx))
-    if S.get('figures') and S.figures[:5]==(p['fingerprint'],refhash,source,height,logx):st.download_button('Save PDF, SVG and 600 dpi PNG figures',S.figures[5],'current_duration_figures.zip','application/zip')
+    if st.button('Prepare publication figures'):S.figures=(p['fingerprint'],refhash,source,height,logx,bins,figure_archive(table,'duration_ms',height,logx,bins=bins))
+    if S.get('figures') and S.figures[:6]==(p['fingerprint'],refhash,source,height,logx,bins):st.download_button('Save PDF, SVG and 600 dpi PNG figures',S.figures[6],'current_duration_figures.zip','application/zip')
     next_step('5 · Cluster events')
 elif step.startswith('5'):
     st.header('5 · Cluster the events')

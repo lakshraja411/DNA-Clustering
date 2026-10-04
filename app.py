@@ -66,7 +66,7 @@ if step.startswith('1'):
             fingerprint=hashlib.sha256(b''.join(hashlib.sha256(blobs[k]).digest() for k in sorted(blobs))).hexdigest()
             same_project=('project' in S and S.project['fingerprint']==fingerprint and S.project['matching']=={'start_column':col,'tolerance_s':tol})
             if not same_project:
-                for key in ['refs','group','prepared','fitfile','fit_errors','recording_confirmed','confirmation_widget']:S.pop(key,None)
+                for key in ['refs','group','prepared','fitfile','fit_errors','refinement_history','recording_confirmed','confirmation_widget']:S.pop(key,None)
             S.project=dict(events=events,raw=raw,settings=settings,dsettings=dsettings,dataset=dataset,mapping=mapping,rawmap=rawmap,status=status,rstatus=rstatus,rejected=rejected+rreject,
                 fingerprint=fingerprint,files={k:{'name':u.name,'sha256':hashlib.sha256(blobs[k]).hexdigest()} for k,u in uploads.items()},matching={'start_column':col,'tolerance_s':tol})
             if not same_project:S.refs={}
@@ -90,7 +90,8 @@ measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
 meta={'version':'0.5.1','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
-      'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},'fit_hash':refhash}
+      'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},
+      'refinement_history':S.get('refinement_history',[]),'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
 st.sidebar.caption('Unrefined events retain their uploaded fits.')
 
@@ -237,29 +238,166 @@ elif step.startswith('3'):
     st.write('Try one event first. Review its fit before applying the method to all events. Uploaded files are never overwritten.')
     e=choose_event();method=st.selectbox('Refinement method',['Segment means','New levels (PELT)','Rounded pulse (Gaussian)'])
     st.caption({'Segment means':'Keep the existing step boundaries and recalculate the level heights.','New levels (PELT)':'Find new step boundaries; the penalty controls how readily another step is added.','Rounded pulse (Gaussian)':'Fit one smooth pulse. Use for single rounded events, not multilevel events.'}[method])
+
     with st.expander('Advanced refinement settings',expanded=method=='New levels (PELT)'):
         minimum=st.number_input('Minimum step duration (µs)',5.,10000.,25.,step=5.,disabled=method!='New levels (PELT)')
         penalty=st.number_input('Extra-step penalty',.1,100.,8.,step=.5,disabled=method!='New levels (PELT)')
+
     scope=st.radio('Refine',['Selected event','All events'],horizontal=True)
+
     if st.button('Calculate refined fits',type='primary'):
-        targets=events if scope=='All events' else [e];errors=[];bar=st.progress(0.)
+        targets=events if scope=='All events' else [e]
+        errors=[]
+        history=S.setdefault('refinement_history',[])
+        batch_id=max([int(h.get('batch_id',0)) for h in history],default=0)+1
+        bar=st.progress(0.)
+
         for j,item in enumerate(targets):
-            try:refs[item.index]=refine(item,method,minimum,penalty)
-            except Exception as ex:errors.append({'event_id':item.index,'reason':str(ex)})
+            attempted_parameters={'minimum_step_duration_us':float(minimum),'extra_step_penalty':float(penalty)} if method=='New levels (PELT)' else {}
+            try:
+                new_ref=refine(item,method,minimum,penalty)
+                refs[item.index]=new_ref
+                history.append({
+                    'batch_id':batch_id,
+                    'event_id':int(item.index),
+                    'scope':scope,
+                    'method':method,
+                    'status':'success',
+                    'parameters':new_ref.get('parameters',attempted_parameters),
+                    'reason':''
+                })
+            except Exception as ex:
+                reason=str(ex)
+                errors.append({'event_id':item.index,'reason':reason})
+                history.append({
+                    'batch_id':batch_id,
+                    'event_id':int(item.index),
+                    'scope':scope,
+                    'method':method,
+                    'status':'failed',
+                    'parameters':attempted_parameters,
+                    'reason':reason
+                })
             bar.progress((j+1)/len(targets))
-        S.refs=refs;S.fit_errors=errors
+
+        S.refs=refs
+        S.fit_errors=errors
+        S.refinement_history=history
         for key in ['group','prepared','fitfile']:S.pop(key,None)
         st.rerun()
+
     show(trace_figure(e,refs.get(e.index)),'refinement')
-    if e.index in refs:st.dataframe(pd.DataFrame([fit_metrics(e,e.fit),fit_metrics(e,refs[e.index]['fit'])],index=['Uploaded fit','Refined fit']))
+
+    if e.index in refs:
+        st.dataframe(pd.DataFrame(
+            [fit_metrics(e,e.fit),fit_metrics(e,refs[e.index]['fit'])],
+            index=['Uploaded fit','Refined fit']
+        ))
+
     st.caption('A lower RMSE is not proof of a more accurate physical model. Baseline and event boundaries remain fixed.')
-    if S.get('fit_errors'):st.warning('Some refinements failed; their previous fits remain selected.');st.dataframe(pd.DataFrame(S.fit_errors),hide_index=True)
+
+    if S.get('fit_errors'):
+        st.warning('Some refinements failed; their previous fits remain selected.')
+        st.dataframe(pd.DataFrame(S.fit_errors),hide_index=True)
+
+    with st.expander('Refinement audit and history',expanded=bool(refs or S.get('refinement_history'))):
+        st.write('The current audit lists the refinement presently selected for each event. The attempt history also records failed and superseded refinement attempts during this analysis session.')
+
+        current_rows=[]
+        event_lookup={ev.index:ev for ev in events}
+        for event_id,ref in sorted(refs.items()):
+            ev=event_lookup[event_id]
+            old_metrics=fit_metrics(ev,ev.fit)
+            new_metrics=fit_metrics(ev,ref['fit'])
+
+            old_rmse=old_metrics.get('waveform_rmse_nA',np.nan)
+            new_rmse=new_metrics.get('waveform_rmse_nA',np.nan)
+            rmse_change=new_rmse-old_rmse if np.isfinite(old_rmse) and np.isfinite(new_rmse) else np.nan
+            rmse_change_pct=(100*(new_rmse-old_rmse)/old_rmse
+                             if np.isfinite(old_rmse) and np.isfinite(new_rmse) and abs(old_rmse)>1e-12
+                             else np.nan)
+
+            current_rows.append({
+                'event_id':int(event_id),
+                'method':ref.get('method',''),
+                'parameters':json.dumps(ref.get('parameters',{}),sort_keys=True),
+                'uploaded_rmse_nA':old_rmse,
+                'refined_rmse_nA':new_rmse,
+                'rmse_change_nA':rmse_change,
+                'rmse_change_pct':rmse_change_pct,
+                'uploaded_relative_rmse':old_metrics.get('relative_rmse',np.nan),
+                'refined_relative_rmse':new_metrics.get('relative_rmse',np.nan),
+                'uploaded_bias_nA':old_metrics.get('fit_bias_nA',np.nan),
+                'refined_bias_nA':new_metrics.get('fit_bias_nA',np.nan),
+                'uploaded_peak_error_nA':old_metrics.get('peak_error_nA',np.nan),
+                'refined_peak_error_nA':new_metrics.get('peak_error_nA',np.nan),
+                'uploaded_area_error_pct':old_metrics.get('area_error_pct',np.nan),
+                'refined_area_error_pct':new_metrics.get('area_error_pct',np.nan),
+                'refined_segments':len(ref.get('levels',[]))
+            })
+
+        current_audit=pd.DataFrame(current_rows)
+        if len(current_audit):
+            st.subheader('Currently selected refinements')
+            st.caption(f'{len(current_audit)} events currently use refined fits; all other events retain their uploaded fits.')
+            display_cols=[
+                'event_id','method','parameters',
+                'uploaded_rmse_nA','refined_rmse_nA','rmse_change_pct',
+                'uploaded_relative_rmse','refined_relative_rmse',
+                'uploaded_bias_nA','refined_bias_nA',
+                'uploaded_area_error_pct','refined_area_error_pct',
+                'refined_segments'
+            ]
+            st.dataframe(current_audit[display_cols].round(4),hide_index=True)
+            st.download_button(
+                'Save current refinement audit CSV',
+                current_audit.to_csv(index=False),
+                'refinement_audit.csv',
+                'text/csv'
+            )
+        else:
+            st.info('No refined fits are currently selected.')
+
+        history=S.get('refinement_history',[])
+        if history:
+            history_rows=[]
+            for h in history:
+                history_rows.append({
+                    'batch_id':h.get('batch_id'),
+                    'event_id':h.get('event_id'),
+                    'scope':h.get('scope'),
+                    'method':h.get('method'),
+                    'status':h.get('status'),
+                    'parameters':json.dumps(h.get('parameters',{}),sort_keys=True),
+                    'reason':h.get('reason','')
+                })
+            history_df=pd.DataFrame(history_rows)
+            st.subheader('Refinement attempt history')
+            st.caption('A later successful refinement of the same event replaces the active fit, but earlier attempts remain listed here for provenance during this session.')
+            st.dataframe(history_df,hide_index=True)
+            st.download_button(
+                'Save refinement attempt history CSV',
+                history_df.to_csv(index=False),
+                'refinement_history.csv',
+                'text/csv'
+            )
+
     if st.button('Discard all refinements',disabled=not refs):
         S.refs={}
         for key in ['group','prepared','fitfile']:S.pop(key,None)
         st.rerun()
-    if st.button('Prepare new eventfitting file',disabled=not refs):S.fitfile=(refhash,fitting_bytes(events,refs,p['settings'],meta))
-    if S.get('fitfile') and S.fitfile[0]==refhash:st.download_button('Save refined.eventfitting.npz',S.fitfile[1],'refined.eventfitting.npz','application/octet-stream')
+
+    if st.button('Prepare new eventfitting file',disabled=not refs):
+        S.fitfile=(refhash,fitting_bytes(events,refs,p['settings'],meta))
+
+    if S.get('fitfile') and S.fitfile[0]==refhash:
+        st.download_button(
+            'Save refined.eventfitting.npz',
+            S.fitfile[1],
+            'refined.eventfitting.npz',
+            'application/octet-stream'
+        )
+
     st.info(f'{len(refs)} refined fits selected; {len(events)-len(refs)} uploaded fits retained. These selected fits are available in the next steps immediately. Saving does not require re-uploading.')
     next_step('4 · Current–duration plots')
 elif step.startswith('4'):

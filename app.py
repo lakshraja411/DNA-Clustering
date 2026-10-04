@@ -106,10 +106,131 @@ if step.startswith('2'):
         with st.expander('Compare the independently saved eventdata trace'):
             show(trace_figure(p['rawmap'][e.index],current=units.startswith('Current')),'recorded_event')
             st.caption('This is the matched event from eventdata; it is not silently substituted for the trace used by the original fitter.')
-    st.dataframe(measured[measured.event_index==e.index],hide_index=True)
-    with st.expander('Fit disagreement across the recording'):
-        st.write('RMSE measures pointwise disagreement, not whether an event is physically valid. No events are excluded by RMSE.')
-        show(px.scatter(measured,x='duration_ms',y='waveform_rmse_nA',labels=LABELS,hover_data=['event_index']),'fit_disagreement')
+
+    # Enrich the Step 2 table with dimensionless/relative fit-QC quantities.
+    # These are diagnostics only; they are not automatic event-rejection criteria.
+    event_view=measured.copy()
+    with np.errstate(divide='ignore',invalid='ignore'):
+        event_view['rmse_over_noise']=np.where(
+            event_view['padding_std_nA']>0,
+            event_view['waveform_rmse_nA']/event_view['padding_std_nA'],
+            np.nan)
+        event_view['relative_abs_bias_pct']=np.where(
+            np.abs(event_view['mean_blockade_nA'])>1e-12,
+            100*np.abs(event_view['fit_bias_nA'])/np.abs(event_view['mean_blockade_nA']),
+            np.nan)
+        event_view['relative_abs_peak_error_pct']=np.where(
+            np.abs(event_view['peak_blockade_nA'])>1e-12,
+            100*np.abs(event_view['peak_error_nA'])/np.abs(event_view['peak_blockade_nA']),
+            np.nan)
+        event_view['abs_area_error_pct']=np.abs(event_view['area_error_pct'])
+    st.dataframe(event_view[event_view.event_index==e.index],hide_index=True)
+
+    with st.expander('Fit diagnostics across the recording'):
+        st.write('Use these plots to find unusual fit behaviour and relationships across the recording. They assess fit–signal agreement; they do not determine whether an event is physically valid, and no event is excluded by these diagnostics.')
+
+        fit_source=st.radio(
+            'Fit used for diagnostics',
+            ['Uploaded fit','Selected fit (refined where available)'],
+            horizontal=True,
+            key='fit_diagnostic_source')
+
+        diagnostic=measured.copy()
+        metric_names=['waveform_rmse_nA','relative_rmse','fit_bias_nA','peak_error_nA','area_error_pct']
+        if fit_source.startswith('Selected'):
+            for name in metric_names:
+                refined='refined_'+name
+                if refined in diagnostic:
+                    diagnostic[name]=diagnostic[refined].combine_first(diagnostic[name])
+
+        with np.errstate(divide='ignore',invalid='ignore'):
+            diagnostic['rmse_over_noise']=np.where(
+                diagnostic['padding_std_nA']>0,
+                diagnostic['waveform_rmse_nA']/diagnostic['padding_std_nA'],
+                np.nan)
+            diagnostic['relative_abs_bias_pct']=np.where(
+                np.abs(diagnostic['mean_blockade_nA'])>1e-12,
+                100*np.abs(diagnostic['fit_bias_nA'])/np.abs(diagnostic['mean_blockade_nA']),
+                np.nan)
+            diagnostic['relative_abs_peak_error_pct']=np.where(
+                np.abs(diagnostic['peak_blockade_nA'])>1e-12,
+                100*np.abs(diagnostic['peak_error_nA'])/np.abs(diagnostic['peak_blockade_nA']),
+                np.nan)
+            diagnostic['abs_area_error_pct']=np.abs(diagnostic['area_error_pct'])
+
+        diagnostic_labels={
+            **LABELS,
+            'padding_std_nA':'Padding noise SD (nA)',
+            'segments':'Saved segment count',
+            'relative_rmse':'Relative RMSE (dimensionless)',
+            'rmse_over_noise':'RMSE / padding noise (dimensionless)',
+            'fit_bias_nA':'Fit bias (nA)',
+            'relative_abs_bias_pct':'Absolute bias / mean blockade (%)',
+            'peak_error_nA':'Fit peak − measured peak (nA)',
+            'relative_abs_peak_error_pct':'Absolute peak error / measured peak (%)',
+            'area_error_pct':'Fit area error (%)',
+            'abs_area_error_pct':'Absolute fit area error (%)'
+        }
+        x_options=['duration_ms','mean_blockade_nA','peak_blockade_nA','ecd_nA_ms','padding_std_nA','segments']
+        y_options=['waveform_rmse_nA','relative_rmse','rmse_over_noise','fit_bias_nA','relative_abs_bias_pct',
+                   'peak_error_nA','relative_abs_peak_error_pct','area_error_pct','abs_area_error_pct']
+
+        c1,c2,c3=st.columns(3)
+        x_metric=c1.selectbox('X axis',x_options,index=0,format_func=lambda x:diagnostic_labels.get(x,x),key='fit_diag_x')
+        y_metric=c2.selectbox('Y axis',y_options,index=0,format_func=lambda x:diagnostic_labels.get(x,x),key='fit_diag_y')
+        colour_options=['None','segments','padding_std_nA','mean_blockade_nA']
+        colour_metric=c3.selectbox(
+            'Colour by',
+            colour_options,
+            format_func=lambda x:'None' if x=='None' else diagnostic_labels.get(x,x),
+            key='fit_diag_colour')
+
+        signed_y={'fit_bias_nA','peak_error_nA','area_error_pct'}
+        c4,c5=st.columns(2)
+        logx=c4.checkbox('Logarithmic X axis',False,key='fit_diag_logx')
+        logy=c5.checkbox('Logarithmic Y axis',False,key='fit_diag_logy',disabled=y_metric in signed_y)
+        if y_metric in signed_y and S.get('fit_diag_logy',False):
+            S.fit_diag_logy=False
+            logy=False
+
+        good=np.isfinite(diagnostic[x_metric])&np.isfinite(diagnostic[y_metric])
+        if logx:good&=diagnostic[x_metric]>0
+        if logy:good&=diagnostic[y_metric]>0
+        if colour_metric!='None':good&=np.isfinite(diagnostic[colour_metric])
+        d=diagnostic.loc[good].copy()
+
+        if len(d):
+            hover_cols=[c for c in [
+                'event_index','duration_ms','mean_blockade_nA','peak_blockade_nA',
+                'padding_std_nA','waveform_rmse_nA','relative_rmse','rmse_over_noise',
+                'fit_bias_nA','area_error_pct'
+            ] if c in d and c not in [x_metric,y_metric,colour_metric]]
+            fig=px.scatter(
+                d,
+                x=x_metric,
+                y=y_metric,
+                color=None if colour_metric=='None' else colour_metric,
+                log_x=logx,
+                log_y=logy,
+                hover_data=hover_cols,
+                labels=diagnostic_labels,
+                opacity=.65,
+                render_mode='svg')
+            if y_metric in signed_y:
+                fig.add_hline(y=0,line_dash='dot',line_width=1)
+            show(fig,'fit_diagnostics')
+            dropped=len(diagnostic)-len(d)
+            st.caption(f'{len(d)} events plotted; {dropped} omitted because values are missing/non-finite or incompatible with the selected logarithmic axes. Data source for fit metrics: {fit_source}. Zero is shown as a reference for signed-error metrics.')
+        else:
+            st.warning('No finite values are compatible with the selected axes.')
+
+        st.download_button(
+            'Save fit diagnostics CSV',
+            diagnostic.to_csv(index=False),
+            'fit_diagnostics.csv',
+            'text/csv')
+        st.caption('Useful views include RMSE/noise versus duration, relative RMSE versus mean blockade, and RMSE versus padding noise. Treat unusual points as candidates for inspection rather than automatic rejection.')
+
     next_step('3 · Refine and save fits')
 elif step.startswith('3'):
     st.header('3 · Refine and save fits')

@@ -41,14 +41,15 @@ def distribution_figures(df,x,y,logx=False,logy=False,bins=45,color=None):
     return scatter,heat,dropped,h,xe,ye
 
 def profile_figure(profiles,labels,centers,units='nA'):
-    """Overlay only the representative median profile from each feature-space cluster."""
+    """Overlay cluster representative profiles only; no percentile envelope."""
     phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1];f=go.Figure()
+    palette=PALETTE
     for j,c in enumerate(centers):
         n=int(np.sum(np.asarray(labels)==j))
-        f.add_trace(go.Scatter(x=phase,y=c,line=dict(color=PALETTE[j%len(PALETTE)],width=2.2),
-                               name=f'Cluster {j} (n={n})'))
+        f.add_trace(go.Scatter(x=phase,y=c,line=dict(color=palette[j%len(palette)],width=2.2),name=f'Cluster {j} (n={n})'))
     f.update_layout(xaxis_title='Fraction of event duration',yaxis_title=f'Profile ({units})',height=420)
     return f
+
 
 
 PALETTE=['#0072B2','#D55E00','#009E73','#CC79A7','#E69F00','#56B4E9','#332288','#882255','#44AA99','#999933']
@@ -336,18 +337,19 @@ def blockade_dwell_figure(table,blockade_col='clustering_measured_mean_blockade_
     return f
 
 
-def fold_state_figure(table,ratio_col='clustering_deep_to_shallow_ratio',occupancy_col='clustering_deepest_plateau_fraction'):
-    """Physical fold-state map: relative deep-state amplitude versus occupancy."""
-    need=['cluster',ratio_col,occupancy_col]
+def fold_state_figure(table,contrast_col='clustering_fold_contrast',occupancy_col='clustering_deepest_plateau_fraction'):
+    """Physical fold-state map: bounded relative level contrast versus occupancy."""
+    need=['cluster',contrast_col,occupancy_col]
     if any(c not in table for c in need):return go.Figure()
-    d=table[need+([c for c in ['event_index','duration_ms','clustering_resolved_levels'] if c in table])].dropna().copy()
-    d=d[np.isfinite(d[ratio_col])&np.isfinite(d[occupancy_col])&(d[ratio_col]>=1)]
+    d=table[need+([c for c in ['event_index','duration_ms','clustering_resolved_levels','clustering_deep_to_shallow_ratio'] if c in table])].dropna().copy()
+    d=d[np.isfinite(d[contrast_col])&np.isfinite(d[occupancy_col])&(d[contrast_col]>=0)&(d[contrast_col]<1)]
     d['Cluster']=d['cluster'].astype(str)
-    f=px.scatter(d,x=occupancy_col,y=ratio_col,color='Cluster',opacity=.55,
-                 hover_data=[c for c in ['event_index','duration_ms','clustering_resolved_levels'] if c in d],
-                 labels={occupancy_col:'Fraction of analysed duration in deepest state',ratio_col:'Deep / shallow resolved blockade ratio'},
+    f=px.scatter(d,x=occupancy_col,y=contrast_col,color='Cluster',opacity=.55,
+                 hover_data=[c for c in ['event_index','duration_ms','clustering_resolved_levels','clustering_deep_to_shallow_ratio'] if c in d],
+                 labels={occupancy_col:'Fraction of analysed duration in deepest state',contrast_col:'Fold contrast  (deep − shallow)/(deep + shallow)'},
                  color_discrete_sequence=PALETTE)
-    f.add_hline(y=1,line_dash='dot',line_width=1)
+    f.add_hline(y=0,line_dash='dot',line_width=1)
+    f.update_yaxes(range=[-0.02,1.02])
     f.update_layout(height=450)
     return f
 
@@ -396,7 +398,7 @@ def physical_feature_distributions_figure(table):
     specs=[
         ('duration_ms','Dwell time (ms)'),
         ('clustering_measured_mean_blockade_nA','Measured mean blockade (nA)'),
-        ('clustering_deep_to_shallow_ratio','Deep / shallow blockade ratio'),
+        ('clustering_fold_contrast','Fold contrast'),
         ('clustering_ecd_nA_ms','ECD (nA·ms)'),
     ]
     f=make_subplots(rows=2,cols=2,subplot_titles=[b for _,b in specs])
@@ -413,7 +415,7 @@ def physical_feature_distributions_figure(table):
     f.update_layout(height=650,boxmode='group')
     return f
 
-def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,source='Selected fits',method='PCA + agglomerative',dendrogram_p=50,clustering_metadata=None,feature_matrix=None):
+def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,source='Selected fits',method='PCA + agglomerative',dendrogram_p=50):
     """Export the main and supplementary-style DNA clustering figures as separate files.
 
     The layouts are inspired by the analysis sequence in Hart et al. (PCA clustering,
@@ -474,7 +476,7 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         # Main physical feature distributions.
         dist_fields=[('duration_ms','Dwell time (ms)'),
                      ('clustering_measured_mean_blockade_nA','Measured mean blockade (nA)'),
-                     ('clustering_deep_to_shallow_ratio','Deep / shallow blockade ratio'),
+                     ('clustering_fold_contrast','Fold contrast'),
                      ('clustering_ecd_nA_ms','ECD (nA·ms)')]
         fig,axes=plt.subplots(2,2,figsize=(9,6.5),layout='constrained')
         for ax,(field,label) in zip(axes.flat,dist_fields):
@@ -494,12 +496,14 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         # Resolved-level composition.
         if 'clustering_resolved_levels' in feature_table:
             fig,ax=plt.subplots(figsize=(5.8,4.1),layout='constrained');bottom=np.zeros(k)
-            vals=feature_table.clustering_resolved_levels
-            classes=[('1 level',vals<=1),('2 levels',vals==2),('≥3 levels',vals>=3)]
-            for label,mask in classes:
-                pct=np.array([100*np.mean(mask[feature_table.cluster==j]) if np.any(feature_table.cluster==j) else 0. for j in range(k)])
-                ax.bar(np.arange(k),pct,bottom=bottom,label=label);bottom+=pct
-            ax.set_xticks(np.arange(k));ax.set_xlabel('Cluster');ax.set_ylabel('Within-cluster events (%)');ax.set_ylim(0,100);ax.legend(frameon=False,fontsize=8)
+            pct_by_class=[]
+            for j in range(k):
+                vals=feature_table.loc[feature_table.cluster==j,'clustering_resolved_levels'].dropna()
+                pct_by_class.append([100*np.mean(vals<=1) if len(vals) else 0.,100*np.mean(vals==2) if len(vals) else 0.,100*np.mean(vals>=3) if len(vals) else 0.])
+            pct_by_class=np.asarray(pct_by_class,float)
+            for ci,label in enumerate(['1 level','2 levels','≥3 levels']):
+                pct=pct_by_class[:,ci];ax.bar(np.arange(k),pct,bottom=bottom,label=label);bottom+=pct
+            ax.set_xticks(np.arange(k));ax.set_xlabel('Cluster');ax.set_ylabel('Within-cluster resolved events (%)');ax.set_ylim(0,100);ax.legend(frameon=False,fontsize=8)
             save(fig,'main_level_composition')
 
         # Fraction of event spent in its deepest resolved state.
@@ -537,10 +541,5 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         z.writestr('pca_coordinates.csv',pd.DataFrame({'event_id':event_ids,'cluster':labels,'PC1':emb[:,0],'PC2':emb[:,1]}).to_csv(index=False))
         z.writestr('representative_profiles.csv',pd.DataFrame([{'cluster':j,'phase':float(t),'blockade_nA':float(v)} for j,c in enumerate(centers) for t,v in zip(phase,c)]).to_csv(index=False))
         z.writestr('README.txt',('Hart-style DNA clustering export generated from the current recording. Main-style outputs: PCA cluster map without convex-hull fills, per-cluster member traces with median representatives, and representative overlay. Supplementary-style outputs: scree plot, elbow-silhouette scan, optional 3-PC view, and Ward dendrogram for agglomerative clustering. These are analysis analogues, not reproductions of published artwork. Cluster labels denote signal families only; physical/topological assignments require independent interpretation.'))
-        if clustering_metadata is not None:z.writestr('analysis_provenance.json',json.dumps(clustering_metadata,indent=2))
-        if feature_matrix is not None:
-            names=clustering_metadata['clustering']['features'] if clustering_metadata is not None else None
-            z.writestr('clustering_input_features.csv',pd.DataFrame(feature_matrix,columns=names).assign(event_index=event_ids,cluster=labels).to_csv(index=False))
-        if 'stability' in info:z.writestr('stability_checks.csv',pd.DataFrame(info['stability']['repeats']).to_csv(index=False))
         z.writestr('settings.json',json.dumps({'source':source,'method':method,'n_components':info.get('n_components'),'silhouette':info.get('silhouette'),'calinski_harabasz':info.get('calinski_harabasz'),'davies_bouldin':info.get('davies_bouldin')},indent=2))
     return out.getvalue()

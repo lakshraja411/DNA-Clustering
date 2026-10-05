@@ -91,6 +91,40 @@ def load_events(blob):
     if not events:raise ValueError(f'No valid events; first errors: {rejected[:3]}')
     return events,settings,rejected
 
+DATASET_FEATURE_NAMES={
+    0:'height',
+    1:'fwhm',
+    2:'height_at_fwhm',
+    3:'area',
+    4:'width',
+    5:'skew',
+    6:'kurtosis',
+    7:'event_baseline_mean',
+    8:'event_time',
+    9:'event_time_alt',
+}
+
+DATASET_FEATURE_DESCRIPTIONS={
+    0:'NanoSense event height / blockade feature.',
+    1:'NanoSense FWHM event duration feature.',
+    2:'NanoSense height-at-FWHM feature.',
+    3:'NanoSense integrated event area feature.',
+    4:'NanoSense event width / dwell-time feature.',
+    5:'NanoSense event skewness feature.',
+    6:'NanoSense event kurtosis feature.',
+    7:'Mean event baseline; useful for QC but not recommended as a default clustering coordinate.',
+    8:'Event-time / start-time bookkeeping column in the known NanoSense layout; excluded from clustering by default.',
+    9:'Alternate/duplicate event-time-like bookkeeping column in some NanoSense exports; excluded from clustering by default.',
+}
+
+def dataset_feature_name(column):
+    column=int(column)
+    return DATASET_FEATURE_NAMES.get(column,f'X{column}')
+
+def dataset_feature_label(column):
+    column=int(column);name=dataset_feature_name(column)
+    return f'X[:, {column}] · {name}'
+
 def load_dataset(blob):
     with read_npz(blob) as z:
         if 'X' not in z:raise ValueError('Expected numeric X[event, feature] in dataset.npz.')
@@ -291,34 +325,24 @@ def feature_table(events):
              wavelet_approx_mean=float(a.mean()),wavelet_approx_std=float(a.std()),wavelet_detail_energy=float(sum(np.sum(c*c) for c in coefs[1:])/len(y))))
     return pd.DataFrame(rows)
 
-def _feature_space(features,n_components=2,correlation_threshold=.98,scaling="standard"):
-    """Create auditable feature geometry.
+def _feature_space(features,n_components=2,correlation_threshold=None):
+    """Build the PCA space from the original dataset feature matrix.
 
-    Standard scaling retains minority-varying descriptors. Legacy scaling recreates
-    v0.7's central-90% feature exclusion. Balanced/shape representations apply one
-    shared scale to the first 32 waveform positions, preserving relative shape
-    variation while giving the full waveform block unit total variance.
+    Version 0.8 intentionally returns to the early analysis strategy: selected
+    NanoSense ``dataset.npz`` columns are scaled independently to [-1, 1] with
+    ``MinMaxScaler`` and then projected by PCA. Constant columns are removed.
+    Near-duplicate correlation pruning is optional and is OFF by default so the
+    original dataset descriptors are preserved unless the user explicitly asks
+    to prune them.
     """
-    from sklearn.preprocessing import RobustScaler
+    from sklearn.preprocessing import MinMaxScaler
     x=np.asarray(features,float)
     if x.ndim!=2 or len(x)<3:raise ValueError('Feature matrix must contain at least three events.')
     if not np.isfinite(x).all():raise ValueError('All selected clustering features must be finite.')
 
-    q05,q25,median,q75,q95=np.percentile(x,[5,25,50,75,95],axis=0)
-    iqr=q75-q25;central90=q95-q05
-    magnitude=np.maximum(1.,np.maximum(np.abs(q05),np.abs(q95)))
-    spread_tol=1e-9+1e-6*magnitude
-    std=np.nanstd(x,axis=0)
-    truly_constant=std<=1e-12
-    low_robust_spread=central90<=spread_tol
-    if scaling not in ["standard","legacy","balanced","shape"]:raise ValueError("Unknown feature scaling.")
-    if scaling!="legacy":low_robust_spread=np.zeros_like(low_robust_spread,dtype=bool)
-    initial_keep=~(truly_constant|low_robust_spread)
-    dropped_constant=np.flatnonzero(truly_constant).tolist()
-    dropped_low_spread=np.flatnonzero((~truly_constant)&low_robust_spread).tolist()
-
-    dropped_correlated=[]
-    keep=initial_keep.copy()
+    minimum=np.min(x,axis=0);maximum=np.max(x,axis=0);span=maximum-minimum;std=np.std(x,axis=0)
+    keep=span>1e-12
+    dropped_constant=np.flatnonzero(~keep).tolist();dropped_correlated=[]
     if correlation_threshold is not None and keep.sum()>1:
         idx=np.flatnonzero(keep);corr=np.corrcoef(x[:,idx],rowvar=False);chosen=[]
         for j in range(len(idx)):
@@ -327,68 +351,39 @@ def _feature_space(features,n_components=2,correlation_threshold=.98,scaling="st
             else:
                 dropped_correlated.append(int(idx[j]))
         reduced=np.zeros_like(keep);reduced[idx[chosen]]=True;keep=reduced
-    if keep.sum()<1:
-        raise ValueError('No clustering feature has enough robust spread after QC. Review feature extraction and resolution settings.')
+    if keep.sum()<1:raise ValueError('No non-constant dataset feature remains for PCA.')
 
     retained=np.flatnonzero(keep)
-    center=median[retained]
-    # Normal-like variables keep their IQR scaling.  Zero-inflated/peaked variables
-    # get a floor tied to the central 90% range, preventing microscopic denominators.
-    scale=np.maximum(iqr[retained],.25*central90[retained])
-    scale=np.maximum(scale,spread_tol[retained])
-    scaling_method='median / max(IQR, 0.25 x Q05-Q95 spread)'
-    if scaling!='legacy':
-        center=np.mean(x[:,retained],axis=0)
-        scale=std[retained].copy()
-        scaling_method='mean / standard deviation; constant features removed, minority-varying features retained'
-        if scaling in ['balanced','shape']:
-            # First 32 columns contain mean-normalised phase-bin blockade.
-            # One shared shape scale gives that entire block unit total variance.
-            # Each remaining scalar (log amplitude, log duration) has unit variance.
-            shape_positions=retained<32
-            if shape_positions.any():scale[shape_positions]=np.sqrt(np.sum(std[retained[shape_positions]]**2))
-            scaling_method='equal total variance per block: normalised waveform'+(' / log amplitude / log duration' if scaling=='balanced' else '')
-    scaled=(x[:,retained]-center)/scale
-
-    # Keep a fitted sklearn scaler object for backwards-compatible metadata access;
-    # overwrite its centre/scale with the safeguarded values actually used above.
-    scaler=RobustScaler(quantile_range=(25.,75.)).fit(x[:,retained])
-    scaler.center_=center.copy();scaler.scale_=scale.copy()
-
+    scaler=MinMaxScaler(feature_range=(-1.,1.));scaled=scaler.fit_transform(x[:,retained])
     full=PCA().fit(scaled);max_nc=min(scaled.shape[1],len(scaled)-1)
-    nc=max(1,min(int(n_components or 2),max_nc))
-    transformed=full.transform(scaled);coords=transformed[:,:nc]
+    nc=max(1,min(int(n_components or 2),max_nc));transformed=full.transform(scaled);coords=transformed[:,:nc]
 
     stats=[]
     for j in range(x.shape[1]):
         if j in dropped_constant:reason='constant'
-        elif j in dropped_low_spread:reason='central 90% effectively constant'
         elif j in dropped_correlated:reason=f'near-duplicate (|r| >= {float(correlation_threshold):.2f})'
         else:reason='retained'
-        used_scale=float(scale[list(retained).index(j)]) if j in retained else np.nan
-        stats.append(dict(feature_index=int(j),median=float(median[j]),iqr=float(iqr[j]),central90_spread=float(central90[j]),
-                          standard_deviation=float(std[j]),scale_used=used_scale,status=reason))
+        stats.append(dict(feature_index=int(j),minimum=float(minimum[j]),maximum=float(maximum[j]),range=float(span[j]),
+                          standard_deviation=float(std[j]),status=reason))
     return dict(raw=x,keep=keep,scaled=scaled,scaler=scaler,pca=full,n_components=nc,coords=coords,full_coords=transformed,
-                dropped_constant=dropped_constant,dropped_low_spread=dropped_low_spread,dropped_correlated=dropped_correlated,
-                correlation_threshold=correlation_threshold,feature_stats=stats,scaling_method=scaling_method)
+                dropped_constant=dropped_constant,dropped_low_spread=[],dropped_correlated=dropped_correlated,
+                correlation_threshold=correlation_threshold,feature_stats=stats,scaling_method='MinMaxScaler [-1, 1]')
 
 
-def feature_space_diagnostics(features,feature_names=None,correlation_threshold=.98,scaling="standard"):
-    """Return PCA/correlation diagnostics without assigning clusters."""
+def feature_space_diagnostics(features,feature_names=None,correlation_threshold=None):
+    """Return dataset-feature correlation and PCA diagnostics without assigning clusters."""
     x=np.asarray(features,float)
     names=list(feature_names or [f'feature_{i}' for i in range(x.shape[1])])
-    space=_feature_space(x,n_components=max(1,x.shape[1]),correlation_threshold=correlation_threshold,scaling=scaling)
+    space=_feature_space(x,n_components=max(1,x.shape[1]),correlation_threshold=correlation_threshold)
     retained=[n for n,k in zip(names,space['keep']) if k]
     dropped_constant=[names[i] for i in space['dropped_constant']]
-    dropped_low_spread=[names[i] for i in space.get('dropped_low_spread',[])]
     dropped_correlated=[names[i] for i in space['dropped_correlated']]
     raw_corr=np.corrcoef(x,rowvar=False) if x.shape[1]>1 else np.array([[1.]])
     spread_table=[]
     for name,row in zip(names,space['feature_stats']):
-        spread_table.append({'Feature':name,'Median':row['median'],'IQR':row['iqr'],'Q05-Q95 spread':row['central90_spread'],
-                             'Scale used':row['scale_used'],'Status':row['status']})
-    return dict(
-        feature_names=names,retained_features=retained,dropped_constant=dropped_constant,dropped_low_spread=dropped_low_spread,
+        spread_table.append({'Feature':name,'Minimum':row['minimum'],'Maximum':row['maximum'],'Range':row['range'],
+                             'Std':row['standard_deviation'],'Status':row['status']})
+    return dict(feature_names=names,retained_features=retained,dropped_constant=dropped_constant,dropped_low_spread=[],
         dropped_correlated=dropped_correlated,keep_mask=space['keep'].tolist(),correlation=raw_corr.tolist(),
         scree=space['pca'].explained_variance_ratio_.tolist(),cumulative=np.cumsum(space['pca'].explained_variance_ratio_).tolist(),
         max_components=int(space['full_coords'].shape[1]),spread_table=spread_table,scaling_method=space['scaling_method'])
@@ -413,7 +408,6 @@ def _cut_ward(linkage_matrix,k):
 
 
 def _cluster_coords(coords,k,method,random_state=42,linkage_matrix=None):
-    if int(k)==1:return np.zeros(len(coords),dtype=int),None,None
     if len(coords)<=k or np.unique(coords,axis=0).shape[0]<k:raise ValueError('Too few distinct PCA coordinates for this k.')
     if 'agglomerative' in method.lower():
         linkage_matrix=_ward_linkage(coords) if linkage_matrix is None else linkage_matrix
@@ -435,15 +429,15 @@ def _elbow_from_dispersion(ks,values):
     j=int(np.argmax(distance));return int(ks[j]),float(max(distance[j],0.))
 
 
-def cluster_count_diagnostics(features,method='PCA + agglomerative',n_components=2,k_min=2,k_max=8,feature_names=None,correlation_threshold=.98,random_state=42,scaling="standard"):
+def cluster_count_diagnostics(features,method='PCA + agglomerative',n_components=2,k_min=2,k_max=8,feature_names=None,correlation_threshold=None,random_state=42):
     """Hart-style k scan: within-cluster dispersion ('elbow') plus silhouette.
 
     Calinski-Harabasz and Davies-Bouldin are retained as secondary diagnostics, but
     the main visual decision mirrors the paper: inspect the elbow and silhouette together.
     """
-    x=np.asarray(features,float);k_min=max(1,int(k_min));k_max=min(int(k_max),len(x)-1)
+    x=np.asarray(features,float);k_min=max(2,int(k_min));k_max=min(int(k_max),len(x)-1)
     if k_max<k_min:raise ValueError('Not enough events for the requested cluster-count range.')
-    space=_feature_space(x,n_components=n_components,correlation_threshold=correlation_threshold,scaling=scaling);coords=space['coords']
+    space=_feature_space(x,n_components=n_components,correlation_threshold=correlation_threshold);coords=space['coords']
     linkage_matrix=_ward_linkage(coords) if 'agglomerative' in method.lower() else None
     rows=[]
     for k in range(k_min,k_max+1):
@@ -451,9 +445,9 @@ def cluster_count_diagnostics(features,method='PCA + agglomerative',n_components
             labels,_,_= _cluster_coords(coords,k,method,random_state,linkage_matrix)
             counts=np.bincount(labels,minlength=k)
             rows.append(dict(k=k,dispersion=_dispersion(coords,labels),
-                silhouette=float(silhouette_score(coords,labels,sample_size=min(2000,len(coords)),random_state=random_state)) if k>1 else np.nan,
-                calinski_harabasz=float(calinski_harabasz_score(coords,labels)) if k>1 else np.nan,
-                davies_bouldin=float(davies_bouldin_score(coords,labels)) if k>1 else np.nan,
+                silhouette=float(silhouette_score(coords,labels,sample_size=min(2000,len(coords)),random_state=random_state)),
+                calinski_harabasz=float(calinski_harabasz_score(coords,labels)),
+                davies_bouldin=float(davies_bouldin_score(coords,labels)),
                 min_cluster_size=int(counts.min()),min_cluster_fraction=float(counts.min()/len(coords))))
         except ValueError:pass
     if not rows:raise ValueError('No valid cluster counts could be evaluated.')
@@ -478,29 +472,30 @@ def _ordered_feature_result(space,profiles,k,method,random_state=42):
     order=np.argsort(raw_centers.mean(axis=1));remap=np.empty(k,int);remap[order]=np.arange(k)
     labels=remap[labels];centers=raw_centers[order]
     if pca_centers is not None:pca_centers=pca_centers[order]
-    sil=float(silhouette_score(coords,labels,sample_size=min(2000,len(coords)),random_state=42)) if k>1 else np.nan
-    ch=float(calinski_harabasz_score(coords,labels)) if k>1 else np.nan;db=float(davies_bouldin_score(coords,labels)) if k>1 else np.nan;dispersion=_dispersion(coords,labels)
+    sil=float(silhouette_score(coords,labels,sample_size=min(2000,len(coords)),random_state=42))
+    ch=float(calinski_harabasz_score(coords,labels));db=float(davies_bouldin_score(coords,labels));dispersion=_dispersion(coords,labels)
     ari=np.nan
-    if k>1 and 'k-means' in method.lower():
+    if 'k-means' in method.lower():
         second,_,_=_cluster_coords(coords,k,method,random_state+1);ari=float(adjusted_rand_score(labels,second))
     full=space['pca'];scaler=space['scaler'];full_coords=space['full_coords']
     embedding=full_coords[:,:2] if full_coords.shape[1]>=2 else np.c_[full_coords[:,0],np.zeros(len(full_coords))]
     embedding3=full_coords[:,:3] if full_coords.shape[1]>=3 else None
-    center=np.asarray(getattr(scaler,'center_',np.zeros(space['scaled'].shape[1])),float)
-    scale=np.asarray(getattr(scaler,'scale_',np.ones(space['scaled'].shape[1])),float)
+    data_min=np.asarray(scaler.data_min_,float);data_max=np.asarray(scaler.data_max_,float)
+    center=(data_min+data_max)/2.;scale=np.maximum((data_max-data_min)/2.,1e-12)
     return dict(labels=labels,centers=centers,profiles=np.asarray(profiles,float),silhouette=sil,calinski_harabasz=ch,davies_bouldin=db,ari=ari,
        embedding=embedding,embedding3=embedding3,pca_variance=full.explained_variance_ratio_[:min(3,len(full.explained_variance_ratio_))].tolist(),
        scree=full.explained_variance_ratio_.tolist(),cumulative=np.cumsum(full.explained_variance_ratio_).tolist(),
        loadings=full.components_[:space['n_components']].tolist(),feature_keep_mask=space['keep'].tolist(),
-       feature_center=center.tolist(),feature_mean=center.tolist(),feature_scale=scale.tolist(),pca_center=full.mean_.tolist(),n_components=space['n_components'],dispersion=dispersion,
+       feature_center=center.tolist(),feature_mean=center.tolist(),feature_scale=scale.tolist(),
+       feature_min=data_min.tolist(),feature_max=data_max.tolist(),n_components=space['n_components'],dispersion=dispersion,
        linkage_matrix=linkage_matrix,pca_centers=pca_centers,dropped_constant=space['dropped_constant'],dropped_correlated=space['dropped_correlated'],
-       center_note='Pointwise median duration-normalised waveforms of feature-cluster members; not reconstructed PCA centroids.',
-       metric='Euclidean in retained PCA space',scaling_method=space['scaling_method'])
+       center_note='Pointwise median duration-normalised waveforms of dataset-feature cluster members; not reconstructed PCA centroids.',
+       metric='Euclidean in MinMax[-1,1]-scaled retained PCA space')
 
 
-def cluster_features(features,profiles,k,n_components=2,method='PCA + agglomerative',correlation_threshold=.98,scaling='standard'):
-    """Cluster event representations after declared scaling, optional correlation pruning and PCA."""
-    space=_feature_space(features,n_components=n_components,correlation_threshold=correlation_threshold,scaling=scaling)
+def cluster_features(features,profiles,k,n_components=2,method='PCA + agglomerative',correlation_threshold=None):
+    """Cluster selected dataset features after min-max scaling and PCA."""
+    space=_feature_space(features,n_components=n_components,correlation_threshold=correlation_threshold)
     return _ordered_feature_result(space,profiles,k,method)
 
 

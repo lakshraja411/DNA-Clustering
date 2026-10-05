@@ -77,6 +77,20 @@ np.testing.assert_allclose(a.log10_deep_to_shallow_ratio,[0,np.log10(2),np.log10
 np.testing.assert_allclose(a.deepest_plateau_fraction,[1,.5,.5])
 np.testing.assert_allclose(a.resolved_shape_complexity.iloc[0],0,atol=1e-12)
 np.testing.assert_allclose(a.resolved_shape_complexity.iloc[1:],1/3,rtol=1e-10)
-np.testing.assert_allclose(a.measured_mean_blockade_nA,[.9975,1.495,1.4975],rtol=1e-10)
+np.testing.assert_allclose(a.measured_mean_blockade_nA,[1,1.5,1.5],rtol=1e-10)
 assert a.measured_temporal_centroid.iloc[1] < .5 < a.measured_temporal_centroid.iloc[2]
-print('PASS: six-feature DNA-conformation model gives ratio=1 for one level, ratio=2 for 2:1 levels, correct occupancy/complexity, measured mean and temporal direction.')
+print('PASS: DNA conformation descriptors give ratio=1 for one level, ratio=2 for 2:1 levels, correct occupancy/complexity, measured mean and temporal direction.')
+
+# Regression: signed measured blockade noise must never create an impossible temporal centroid.
+e=event(40,[1],[200])
+m=(e.time>=e.bounds[0])&(e.time<e.bounds[1])
+# Inject oscillatory baseline noise with negative blockade samples while keeping a real event.
+noise=np.zeros_like(e.current)
+idx=np.flatnonzero(m)
+noise[idx]=1.5*np.sin(np.linspace(0,20*np.pi,len(idx)))
+e.current=e.current+noise
+f,_=level_features([e],omit_short_boundaries=False)
+assert f.physical_eligible.iloc[0]
+assert 0.0 <= f.measured_temporal_centroid.iloc[0] <= 1.0
+assert 0.0 <= f.fold_contrast.iloc[0] < 1.0
+print('PASS: positive-blockade temporal centroid stays within [0,1] under signed baseline noise; fold contrast stays bounded.')

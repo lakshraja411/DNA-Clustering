@@ -11,14 +11,14 @@ import workflow as _workflow
 import plots as _plots
 
 _REQUIRED = {
-    'analysis.py': (_analysis, ['load_events','load_dataset','link_dataset','describe','refine','fit_metrics','cluster_features','feature_space_diagnostics','cluster_count_diagnostics','safe_settings','DATASET_FEATURE_NAMES','DATASET_FEATURE_DESCRIPTIONS','dataset_feature_name','dataset_feature_label']),
+    'analysis.py': (_analysis, ['load_events','load_dataset','link_dataset','describe','refine','fit_metrics','cluster_features','feature_space_diagnostics','cluster_count_diagnostics','safe_settings','DATASET_FEATURE_NAMES','DATASET_FEATURE_DESCRIPTIONS','dataset_feature_name','dataset_feature_label','aligned_event_profiles','cluster_median_profiles']),
     'physical.py': (_physical, ['level_features','PHYSICAL_DESCRIPTIONS']),
     'workflow.py': (_workflow, ['active_events','signal_events','fitting_bytes','match_raw','bundle']),
     'plots.py': (_plots, ['trace_figure','distribution_figures','profile_figure','LABELS','scientific','figure_archive','profile_archive','cluster_pca_figure','member_profile_figure_hart','representative_time_examples','time_example_figure','pca_scree_figure','k_diagnostics_figure','feature_correlation_figure','cluster_pca_3d_figure','dendrogram_figure','hart_style_archive','blockade_dwell_figure','population_fraction_figure','level_composition_figure','occupancy_figure','physical_feature_distributions_figure','fold_state_figure']),
 }
 _missing = {filename:[name for name in names if not hasattr(module,name)] for filename,(module,names) in _REQUIRED.items()}
 _missing = {filename:names for filename,names in _missing.items() if names}
-_EXPECTED_RELEASE='0.8.0'
+_EXPECTED_RELEASE='0.8.2'
 _version_mismatch={filename:getattr(module,'RELEASE_VERSION',None) for filename,(module,_) in _REQUIRED.items() if getattr(module,'RELEASE_VERSION',None)!=_EXPECTED_RELEASE}
 if _missing or _version_mismatch:
     st.error('DNA Event Lab file-version mismatch: helper files are not all from release '+_EXPECTED_RELEASE+'.')
@@ -29,13 +29,13 @@ if _missing or _version_mismatch:
     st.info('Replace app.py, analysis.py, physical.py, plots.py, workflow.py and requirements.txt together from the same release, then reboot the Streamlit app. Do not keep version-suffixed filenames in the repository; the deployed files must be named exactly app.py, analysis.py, physical.py, plots.py and workflow.py.')
     st.stop()
 
-from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,cluster_features,feature_space_diagnostics,cluster_count_diagnostics,safe_settings,DATASET_FEATURE_NAMES,DATASET_FEATURE_DESCRIPTIONS,dataset_feature_name,dataset_feature_label
+from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,cluster_features,feature_space_diagnostics,cluster_count_diagnostics,safe_settings,DATASET_FEATURE_NAMES,DATASET_FEATURE_DESCRIPTIONS,dataset_feature_name,dataset_feature_label,aligned_event_profiles,cluster_median_profiles
 from physical import level_features,PHYSICAL_DESCRIPTIONS
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
 from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure,fold_state_figure
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
-st.title('DNA Event Lab · v0.8.0')
+st.title('DNA Event Lab · v0.8.2')
 st.caption('Load → inspect → refine → plot → cluster → save')
 st.sidebar.title('Your analysis')
 S=st.session_state
@@ -73,6 +73,28 @@ if 'project' in S:
 
 def show(fig,key):
     st.plotly_chart(scientific(fig),width='stretch',key=key,theme=None,config={'displaylogo':False,'toImageButtonOptions':{'format':'svg','filename':key,'width':900,'height':600}})
+
+def _auto_axis_limits(values,pad=.05,positive=False):
+    a=np.asarray(values,float).ravel();a=a[np.isfinite(a)]
+    if positive:a=a[a>0]
+    if not len(a):return [0.,1.]
+    lo=float(np.min(a));hi=float(np.max(a))
+    if lo==hi:
+        span=max(abs(lo)*.1,1e-6);lo-=span;hi+=span
+    elif positive:
+        lo=max(np.nextafter(0.,1.),lo/(1.+pad));hi=hi*(1.+pad)
+    else:
+        span=hi-lo;lo-=pad*span;hi+=pad*span
+    return [float(lo),float(hi)]
+
+def _axis_pair(label,key,default):
+    c1,c2=st.columns(2)
+    lo=c1.number_input(label+' min',value=float(default[0]),format='%.6f',key=key+'_min')
+    hi=c2.number_input(label+' max',value=float(default[1]),format='%.6f',key=key+'_max')
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi<=lo:
+        st.warning(label+': max must be greater than min; current automatic limits are being used.')
+        return list(default)
+    return [float(lo),float(hi)]
 
 def next_step(label):navigation('bottom')
 
@@ -534,7 +556,7 @@ elif step.startswith('5'):
         npc=st.slider('Principal components used for clustering',2,max_pc,min(max(2,int(cfg.get('npc',2))),max_pc),help='Two PCs reproduces the Hart-style DNA clustering view most closely. You can increase this as a sensitivity check; the PC1–PC2 graph remains only a display.')
     else:
         npc=1;st.metric('Principal components used for clustering',1)
-    positions=st.select_slider('Waveform positions used only for member-profile plots',[64,128,256],value=cfg.get('positions',128) if cfg.get('positions',128) in [64,128,256] else 128)
+    positions=st.select_slider('Internal normalized-profile resolution',[64,128,256],value=cfg.get('positions',128) if cfg.get('positions',128) in [64,128,256] else 128,help='Used internally for representative matching and for the optional normalized-event-position view. Data-index and real-time family plots use the original recorded samples instead.')
     kmax=st.slider('Largest k to include in elbow–silhouette scan',3,10,int(cfg.get('kmax',8)))
     base_method='PCA + agglomerative' if 'agglomerative' in algorithm.lower() else 'PCA + k-means'
 
@@ -629,25 +651,117 @@ elif step.startswith('5'):
             phys_ok=int(phys_audit.set_index('event_index').reindex(table.event_index).physical_eligible.fillna(False).sum()) if 'physical_eligible' in phys_audit else 0
             st.caption(f'Resolved-level interpretation is available for {phys_ok} of the {len(table)} clustered events. Events without resolved plateau features remain valid cluster members.')
 
-        st.subheader('A · Statistical clustering result from the original dataset features')
+        # Event-family horizontal coordinate.  Data-index / real-time modes use the
+        # original recorded samples aligned at the detected event start, so dwell-time
+        # differences remain visible.  The normalized view is kept as an optional
+        # shape-only comparison and is labelled explicitly rather than as a vague
+        # 'fraction of event duration'.
+        profile_events_display=signal_events(eligible_active,profile_source)
+        with st.expander('Event-family horizontal axis',expanded=True):
+            family_modes=['Data index (sample number)','Time relative to detected event start (ms)','Normalized event position (0 = start, 1 = end)']
+            previous_mode=S.get('family_x_mode',family_modes[0])
+            if previous_mode not in family_modes:previous_mode=family_modes[0]
+            family_mode=st.radio('Horizontal coordinate for cluster-family traces',family_modes,index=family_modes.index(previous_mode),key='family_x_mode')
+            if family_mode==family_modes[2]:
+                family_profiles=np.asarray(info['profiles'],float);family_centers=np.asarray(info['centers'],float)
+                family_x=(np.arange(family_profiles.shape[1])+.5)/family_profiles.shape[1]
+                family_x_label='Normalized event position (0 = start, 1 = end)';family_x_name='normalized_event_position';family_event_start=None
+                st.caption('This view stretches every detected event to the same 0–1 coordinate. It is useful for comparing shape, but absolute dwell-time differences are intentionally removed.')
+            else:
+                cpre,cpost=st.columns(2)
+                pre_samples=int(cpre.number_input('Samples shown before detected event start',min_value=0,max_value=5000,value=int(S.get('family_pre_samples',100)),step=10,key='family_pre_samples'))
+                post_samples=int(cpost.number_input('Samples shown after the longest detected event',min_value=0,max_value=5000,value=int(S.get('family_post_samples',100)),step=10,key='family_post_samples'))
+                aligned=aligned_event_profiles(profile_events_display,pre_samples,post_samples)
+                family_profiles=np.asarray(aligned['profiles'],float)
+                family_centers,_=cluster_median_profiles(family_profiles,info['labels'],.5)
+                if family_mode==family_modes[0]:
+                    family_x=np.asarray(aligned['data_index'],float);family_event_start=float(aligned['event_start_index'])
+                    family_x_label=f'Data index (sample number; event start = {aligned["event_start_index"]})';family_x_name='data_index'
+                else:
+                    family_x=np.asarray(aligned['time_ms'],float);family_event_start=0.
+                    family_x_label='Time relative to detected event start (ms)';family_x_name='time_from_event_start_ms'
+                fs=aligned.get('sampling_rate_hz',np.nan);dt_us=1e6*aligned.get('time_step_s',np.nan)
+                st.caption(f'No event-time stretching is applied. The common window contains {len(family_x)} recorded sample positions; the longest detected event contains {int(np.max(aligned["event_lengths_samples"]))} samples. Median sampling interval = {dt_us:.3g} µs'+(f' ({fs/1000:.3g} kHz).' if np.isfinite(fs) else '.'))
+                if aligned.get('relative_dt_spread',0.)>.01:st.warning('Sampling intervals vary by more than 1% across these events. Data index is still valid as sample number, but the shared millisecond axis should be interpreted cautiously.')
+                st.caption('The red representative is the pointwise cluster median. A median point is drawn only where at least 50% of that cluster has recorded samples; missing trace padding is never invented.')
+        family_view={'profiles':family_profiles,'centers':family_centers,'x':np.asarray(family_x,float),'x_label':family_x_label,'x_name':family_x_name,'event_start_x':family_event_start,'mode':family_mode}
+
+        # Plot ranges never affect PCA or cluster membership. Auto mode already forces
+        # every cluster-family panel onto one shared blockade axis; manual mode lets
+        # the same numerical ranges be reused across salts/voltages/recordings.
         embedding=np.asarray(info['embedding']);variance=info.get('pca_variance',[])
+        time_examples=representative_time_examples(eligible_active,info,profile_source)
+        profile_auto=_auto_axis_limits(np.r_[np.asarray(family_profiles).ravel(),np.asarray(family_centers).ravel()])
+        profile_x_auto=[float(np.nanmin(family_x)),float(np.nanmax(family_x))]
+        pca_x_auto=_auto_axis_limits(embedding[:,0]);pca_y_auto=_auto_axis_limits(embedding[:,1])
+        dwell_x_auto=_auto_axis_limits(table['duration_ms'].to_numpy(),positive=True)
+        blockade_y_auto=_auto_axis_limits(table['clustering_measured_mean_blockade_nA'].to_numpy())
+        actual_x_auto=_auto_axis_limits(time_examples['time_ms'].to_numpy(),positive=False) if len(time_examples) else [0.,1.]
+        actual_y_auto=_auto_axis_limits(time_examples['blockade_nA'].to_numpy()) if len(time_examples) else profile_auto
+        dist_auto={
+            'duration_ms':_auto_axis_limits(table['duration_ms'].to_numpy(),positive=True),
+            'clustering_measured_mean_blockade_nA':blockade_y_auto,
+            'clustering_fold_contrast':_auto_axis_limits(table['clustering_fold_contrast'].dropna().to_numpy()) if 'clustering_fold_contrast' in table else [0.,1.],
+            'clustering_ecd_nA_ms':_auto_axis_limits(table['clustering_ecd_nA_ms'].dropna().to_numpy()) if 'clustering_ecd_nA_ms' in table else [0.,1.],
+        }
+        with st.expander('Plot axis settings · lock ranges for direct comparison',expanded=False):
+            st.caption('Auto mode uses one common blockade axis for every cluster-family panel. Turn on manual/shared limits to reuse the exact same numerical axes across recordings. These controls change only the display and figure exports — never the clustering.')
+            manual_axes=st.checkbox('Use manual/shared numeric limits',value=bool(S.get('cluster_manual_axes',False)),key='cluster_manual_axes')
+            dwell_log=st.checkbox('Use logarithmic dwell-time axis in blockade–dwell plots',value=bool(S.get('cluster_dwell_log',True)),key='cluster_dwell_log')
+            if manual_axes:
+                st.write('**Cluster-family profiles (shared by every cluster panel and the overlay)**')
+                profile_x=_axis_pair(family_x_label,'axis_profile_x',profile_x_auto)
+                profile_y=_axis_pair('Blockade (nA)','axis_profile_y',profile_auto)
+                st.write('**PCA display**')
+                pc1_range=_axis_pair('PC1','axis_pca_x',pca_x_auto);pc2_range=_axis_pair('PC2','axis_pca_y',pca_y_auto)
+                st.caption('Matching PC limits are useful for layout consistency within one PCA model. Separately fitted PCAs from different salts/recordings are not physically comparable just because the displayed limits match.')
+                st.write('**Measured blockade versus dwell time**')
+                dwell_range=_axis_pair('Dwell time (ms)','axis_dwell_x',dwell_x_auto);blockade_range=_axis_pair('Mean blockade (nA)','axis_blockade_y',blockade_y_auto)
+                if dwell_log and dwell_range[0]<=0:
+                    st.warning('A logarithmic dwell axis needs a positive minimum; the automatic positive minimum is being used.')
+                    dwell_range=[dwell_x_auto[0],max(dwell_range[1],dwell_x_auto[1])]
+                st.write('**Representative real events in actual time**')
+                actual_x=_axis_pair('Time from event start (ms)','axis_actual_x',actual_x_auto);actual_y=_axis_pair('Blockade (nA)','axis_actual_y',actual_y_auto)
+                st.write('**Physical-distribution panels**')
+                dist_ranges={
+                    'duration_ms':_axis_pair('Distribution · dwell time (ms)','axis_dist_duration',dist_auto['duration_ms']),
+                    'clustering_measured_mean_blockade_nA':_axis_pair('Distribution · mean blockade (nA)','axis_dist_blockade',dist_auto['clustering_measured_mean_blockade_nA']),
+                    'clustering_fold_contrast':_axis_pair('Distribution · fold contrast','axis_dist_fold',dist_auto['clustering_fold_contrast']),
+                    'clustering_ecd_nA_ms':_axis_pair('Distribution · ECD (nA·ms)','axis_dist_ecd',dist_auto['clustering_ecd_nA_ms']),
+                }
+                fold_x=_axis_pair('Fold-state occupancy','axis_fold_x',[0.,1.]);fold_y=_axis_pair('Fold-state contrast','axis_fold_y',[0.,1.])
+                occupancy_y=_axis_pair('Deepest-state occupancy','axis_occupancy_y',[0.,1.])
+            else:
+                profile_x=profile_x_auto;profile_y=profile_auto;pc1_range=pc2_range=dwell_range=blockade_range=actual_x=actual_y=None
+                dist_ranges={};fold_x=[0.,1.];fold_y=[0.,1.];occupancy_y=[0.,1.]
+                st.info(f'Auto shared cluster-family axes: {family_x_label} = {profile_x[0]:.4g} to {profile_x[1]:.4g}; blockade = {profile_y[0]:.4g} to {profile_y[1]:.4g} nA.')
+        axis_settings={'manual':bool(manual_axes),'profile_x':profile_x,'profile_y':profile_y,'pca_x':pc1_range,'pca_y':pc2_range,
+                       'dwell_x':dwell_range,'blockade_y':blockade_range,'dwell_log_x':bool(dwell_log),
+                       'actual_x':actual_x,'actual_y':actual_y,'fold_x':fold_x,'fold_y':fold_y,
+                       'occupancy_y':occupancy_y,'distribution_ranges':dist_ranges,
+                       'family_mode':family_mode,'family_x_label':family_x_label,'family_event_start_x':family_event_start,
+                       'family_pre_samples':int(S.get('family_pre_samples',100)) if family_mode!=family_modes[2] else None,
+                       'family_post_samples':int(S.get('family_post_samples',100)) if family_mode!=family_modes[2] else None}
+        axis_key=json.dumps(axis_settings,sort_keys=True)
+
+        st.subheader('A · Statistical clustering result from the original dataset features')
         projection=pd.DataFrame(embedding,columns=['PC1','PC2']);projection['Cluster']=table['cluster'].astype(str).to_numpy()
         projection['Event ID']=table['event_index'].to_numpy();projection['Dataset row']=table['dataset_row'].to_numpy()
         projection['Duration (ms)']=table['duration_ms'].to_numpy();projection['Measured mean blockade (nA)']=table['mean_blockade_nA'].to_numpy()
         axis_labels={f'PC{j+1}':f'PC{j+1} ({100*variance[j]:.1f}% variance)' if j<len(variance) else f'PC{j+1}' for j in range(2)}
-        show(cluster_pca_figure(projection,axis_labels,False),'cluster_projection')
+        show(cluster_pca_figure(projection,axis_labels,False,axis_settings['pca_x'],axis_settings['pca_y']),'cluster_projection')
         st.caption(f'Each point is one matched event. No convex-hull fill is used. The black × is the median displayed PC position of that cluster. The grouping used {info.get("n_components",npc)} PC(s) derived only from the selected original dataset columns.')
         st.download_button('Save PC coordinates CSV',projection.to_csv(index=False),'pca_coordinates.csv','text/csv')
 
         st.subheader('B · Do the dataset-derived groups make physical sense?')
-        show(blockade_dwell_figure(table),'cluster_blockade_dwell')
+        show(blockade_dwell_figure(table,log_x=axis_settings['dwell_log_x'],x_range=axis_settings['dwell_x'],y_range=axis_settings['blockade_y']),'cluster_blockade_dwell')
         st.caption('Direct measured dwell-time versus blockade view, coloured only after clustering. This plot did not create the groups.')
 
         if 'clustering_fold_contrast' in table and table['clustering_fold_contrast'].notna().any():
-            show(fold_state_figure(table),'cluster_fold_state')
+            show(fold_state_figure(table,x_range=axis_settings['fold_x'],y_range=axis_settings['fold_y']),'cluster_fold_state')
             st.caption('Resolved-level fold-state map for interpretation only. Missing plateau descriptors do not alter cluster membership.')
 
-        show(physical_feature_distributions_figure(table),'cluster_physical_distributions')
+        show(physical_feature_distributions_figure(table,axis_settings['distribution_ranges']),'cluster_physical_distributions')
         p1,p2,p3=st.columns(3)
         with p1:
             if 'clustering_resolved_levels' in table and table['clustering_resolved_levels'].notna().any():
@@ -655,7 +769,7 @@ elif step.startswith('5'):
                 st.caption('Resolved level composition is independent supporting evidence because level count was not used to form the clusters.')
         with p2:
             if 'clustering_deepest_plateau_fraction' in table and table['clustering_deepest_plateau_fraction'].notna().any():
-                show(occupancy_figure(table),'cluster_deepest_occupancy')
+                show(occupancy_figure(table,y_range=axis_settings['occupancy_y']),'cluster_deepest_occupancy')
                 st.caption('Deepest-state occupancy is also interpretation only.')
         with p3:
             show(population_fraction_figure(table),'cluster_population')
@@ -675,13 +789,18 @@ elif step.startswith('5'):
         st.subheader('C · What do the actual event families look like?')
         columns=st.columns(3)
         for group_id in range(selected_k):
-            with columns[group_id%3]:show(member_profile_figure_hart(info['profiles'],info['labels'],info['centers'],group_id),f'dataset_members_{group_id}')
-        st.caption('Grey curves are a deterministic sample of real member profiles. The red curve is the pointwise median across all members. No percentile band is drawn and amplitude is not normalised away.')
-        st.write('**Median representative profiles overlaid**');show(profile_figure(info['profiles'],info['labels'],info['centers']),'cluster_profiles')
+            with columns[group_id%3]:
+                show(member_profile_figure_hart(family_view['profiles'],info['labels'],family_view['centers'],group_id,
+                    x=family_view['x'],x_label=family_view['x_label'],x_range=axis_settings['profile_x'],y_range=axis_settings['profile_y'],event_start_x=family_view['event_start_x']),f'dataset_members_{group_id}')
+        if family_mode==family_modes[2]:
+            st.caption('Grey curves are duration-normalised member profiles. The red curve is the pointwise median across all members. The 0–1 horizontal coordinate compares waveform shape but intentionally removes absolute dwell-time differences.')
+        else:
+            st.caption('Grey curves are aligned real recorded traces. The red curve is the pointwise median across cluster members. Individual event durations are not stretched; shorter events therefore return to baseline earlier than longer events. The dotted vertical line marks the detected event start.')
+        st.write('**Median representative profiles overlaid**')
+        show(profile_figure(family_view['profiles'],info['labels'],family_view['centers'],x=family_view['x'],x_label=family_view['x_label'],x_range=axis_settings['profile_x'],y_range=axis_settings['profile_y'],event_start_x=family_view['event_start_x']),'cluster_profiles')
 
-        time_examples=representative_time_examples(eligible_active,info,profile_source)
         with st.expander('Representative real events in actual time (ms)',expanded=True):
-            show(time_example_figure(time_examples),'cluster_actual_time')
+            show(time_example_figure(time_examples,axis_settings['actual_x'],axis_settings['actual_y']),'cluster_actual_time')
             st.download_button('Save actual-time example curves',time_examples.to_csv(index=False),'actual_time_examples.csv','text/csv')
 
         st.subheader('D · Supplementary clustering diagnostics')
@@ -717,10 +836,13 @@ elif step.startswith('5'):
         cluster=st.selectbox('Inspect every event in cluster',sorted(table.cluster.unique()));ids=table.loc[table.cluster==cluster,'event_index'].tolist();eid=st.selectbox('Event in this cluster',ids)
         e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
 
-        if st.button('Prepare representative profile figures'):S.cluster_figures=(signature,profile_archive(info['profiles'],info['labels'],info['centers']))
-        if S.get('cluster_figures') and S.cluster_figures[0]==signature:st.download_button('Save representative profile PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_profiles.zip')
-        if st.button('Prepare main + supplementary DNA clustering figure pack'):S.hart_export=(signature,hart_style_archive(info,table['event_index'].to_numpy(),table,cluster_summary,scan,'dataset.npz X',algorithm))
-        if S.get('hart_export') and S.hart_export[0]==signature:st.download_button('Save DNA clustering figure pack',S.hart_export[1],'dna_clustering_figures.zip','application/zip')
+        if st.button('Prepare representative profile figures'):
+            S.cluster_figures=((signature,axis_key),profile_archive(family_view['profiles'],info['labels'],family_view['centers'],axis_settings['profile_y'],
+                x=family_view['x'],x_label=family_view['x_label'],x_range=axis_settings['profile_x'],event_start_x=family_view['event_start_x'],x_name=family_view['x_name']))
+        if S.get('cluster_figures') and S.cluster_figures[0]==(signature,axis_key):st.download_button('Save representative profile PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_profiles.zip')
+        if st.button('Prepare main + supplementary DNA clustering figure pack'):
+            S.hart_export=((signature,axis_key),hart_style_archive(info,table['event_index'].to_numpy(),table,cluster_summary,scan,'dataset.npz X',algorithm,axis_settings=axis_settings,family_view=family_view))
+        if S.get('hart_export') and S.hart_export[0]==(signature,axis_key):st.download_button('Save DNA clustering figure pack',S.hart_export[1],'dna_clustering_figures.zip','application/zip')
         next_step('6 · Save clusters')
 elif step.startswith('6'):
     st.header('6 · Save cluster data')

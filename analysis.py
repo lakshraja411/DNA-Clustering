@@ -1,5 +1,5 @@
 """Nanopore Shape Lab 0.4: explicit signal processing and lossless event subsets."""
-RELEASE_VERSION='0.8.0'
+RELEASE_VERSION='0.8.2'
 from dataclasses import dataclass
 import io, json, re, zipfile
 import numpy as np
@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.8.0'
+VERSION='0.8.2'
 @dataclass
 class Event:
     index:int
@@ -147,6 +147,62 @@ def link_dataset(events,x,start_column=8,tolerance=1e-7):
 def profile(e,bins,fit=None):
     y=e.baseline-(e.current if fit is None else fit)
     return np.interp((np.arange(bins)+.5)/bins,(e.time-e.bounds[0])/np.diff(e.bounds)[0],y)
+
+def aligned_event_profiles(events,pre_samples=100,post_samples=100):
+    """Return real-sample blockade traces aligned to the detected event start.
+
+    The common window begins ``pre_samples`` before the first in-event sample and
+    extends through the longest detected event plus ``post_samples``.  No time
+    stretching is performed: one horizontal step is one recorded sample. Missing
+    samples outside an event's saved trace are left as NaN rather than fabricated.
+    """
+    events=list(events)
+    pre_samples=int(pre_samples);post_samples=int(post_samples)
+    if not events:raise ValueError('Need at least one event for aligned profiles.')
+    if pre_samples<0 or post_samples<0:raise ValueError('Pre/post sample counts must be nonnegative.')
+    starts=[];lengths=[];dts=[]
+    for e in events:
+        m=mask(e);idx=np.flatnonzero(m)
+        if not len(idx):raise ValueError(f'Event {e.index} has no samples inside its detected bounds.')
+        starts.append(int(idx[0]));lengths.append(int(len(idx)));dts.append(float(np.median(np.diff(e.time))))
+    event_span=max(lengths);total=pre_samples+event_span+post_samples
+    profiles=np.full((len(events),total),np.nan,float)
+    for i,(e,start) in enumerate(zip(events,starts)):
+        blockade=np.asarray(e.baseline-e.current,float)
+        source_left=start-pre_samples;source_right=start+event_span+post_samples
+        src0=max(0,source_left);src1=min(len(blockade),source_right)
+        if src1<=src0:continue
+        dst0=src0-source_left;dst1=dst0+(src1-src0)
+        profiles[i,dst0:dst1]=blockade[src0:src1]
+    dt_s=float(np.median(dts));sampling_hz=float(1./dt_s) if dt_s>0 else np.nan
+    return dict(
+        profiles=profiles,
+        data_index=np.arange(total,dtype=float),
+        relative_index=np.arange(total,dtype=float)-pre_samples,
+        time_ms=(np.arange(total,dtype=float)-pre_samples)*dt_s*1000.,
+        event_start_index=int(pre_samples),
+        event_lengths_samples=np.asarray(lengths,int),
+        coverage=np.sum(np.isfinite(profiles),axis=0),
+        time_step_s=dt_s,
+        sampling_rate_hz=sampling_hz,
+        relative_dt_spread=float(np.max(np.abs(np.asarray(dts,float)-dt_s))/dt_s) if dt_s>0 else np.nan,
+    )
+
+def cluster_median_profiles(profiles,labels,min_coverage_fraction=.5):
+    """Pointwise cluster medians, suppressing regions with sparse trace coverage."""
+    import warnings
+    x=np.asarray(profiles,float);labels=np.asarray(labels)
+    if x.ndim!=2 or len(x)!=len(labels):raise ValueError('Profile matrix and labels are misaligned.')
+    groups=sorted(np.unique(labels).tolist());centers=[];coverage=[]
+    for g in groups:
+        members=x[labels==g]
+        finite=np.sum(np.isfinite(members),axis=0);minimum=max(1,int(np.ceil(len(members)*float(min_coverage_fraction))))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore',category=RuntimeWarning)
+            center=np.nanmedian(members,axis=0)
+        center[finite<minimum]=np.nan
+        centers.append(center);coverage.append(finite)
+    return np.asarray(centers,float),np.asarray(coverage,int)
 
 def fit_metrics(e,fit):
     if fit is None:return dict(waveform_rmse_nA=np.nan,relative_rmse=np.nan,fit_bias_nA=np.nan,peak_error_nA=np.nan,area_error_pct=np.nan)

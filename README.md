@@ -1,68 +1,17 @@
-# DNA Event Lab v0.8.0 — original dataset-feature clustering
+# DNA Event Lab v0.8.2
 
-This release deliberately returns Step 5 to the **original NanoSense `dataset.npz` feature matrix** rather than constructing the clustering space from newly engineered plateau descriptors.
+## Hart-style event-family x-axis update
 
-The default feature selection for the NanoSense layout used in this project is:
+Step 5 keeps the v0.8.1 dataset-feature clustering unchanged. This release changes only the event-family waveform display and figure exports.
 
-- `X[:,0]` height
-- `X[:,1]` FWHM
-- `X[:,2]` height-at-FWHM
-- `X[:,3]` area
-- `X[:,4]` width
-- `X[:,5]` skewness
-- `X[:,6]` kurtosis
+The cluster-family panels and representative overlay now offer three horizontal coordinates:
 
-`X[:,7]` is treated as baseline/QC and is not selected by default. `X[:,8]` and, where present, `X[:,9]` are treated as event-time/bookkeeping columns and are excluded by default. The interface always shows the raw column index because NanoSense layouts can vary between versions. The user can change the feature selection before clustering.
+1. **Data index (sample number)** — default. Original recorded samples are aligned at the detected event start. Individual events are not stretched, so dwell-time differences remain visible. The detected event start is marked by a dotted vertical line. The window includes a user-selected number of pre-event samples and extends through the longest detected event plus user-selected post-event samples.
+2. **Time relative to detected event start (ms)** — the same aligned real-sample traces, but the sample index is converted to milliseconds using the median sampling interval of the recording. Event start is 0 ms.
+3. **Normalized event position (0 = start, 1 = end)** — the previous duration-normalised view, retained only as an optional shape comparison. This wording replaces the less clear “fraction of event duration”. Absolute dwell-time differences are removed in this view.
 
-## Step 5 pipeline
+For aligned data-index/time views, missing samples outside the saved event trace are stored as NaN and are never fabricated. Cluster representatives are pointwise medians, shown only where at least 50% of the cluster has recorded samples. No percentile band is drawn.
 
-The primary clustering pipeline is:
+The shared/manual axis controls from v0.8.1 now also include the cluster-family horizontal axis, and both the representative-profile ZIP and the main + supplementary clustering figure pack inherit the selected horizontal coordinate and axis limits.
 
-`matched original dataset rows → selected X columns → MinMax scaling to [-1,1] → PCA → Ward agglomerative OR k-means`
-
-This intentionally reproduces the earlier feature-space philosophy. No log-transformed dwell time, fold contrast, deep-state fraction, temporal centroid, ECD, level count, or other hand-engineered physical feature is inserted into the primary clustering matrix.
-
-Constant selected columns are removed. Correlation pruning at `|r| >= 0.98` is available as an optional sensitivity check and is **off by default**. The interface shows the raw feature correlation matrix, min/max/range table, PCA scree plot, PCA loadings, elbow/silhouette scan, optional 3-PC view, and Ward dendrogram.
-
-The default PCA dimension is 2 to make comparison with Hart-style DNA PCA clustering straightforward, but the number of PCs remains adjustable. Both Ward and k-means use the exact same scaled dataset features and PCA coordinates.
-
-## Physical interpretation is deliberately separate
-
-Resolved plateau descriptors are still calculated, but they do **not** decide cluster membership. They are merged onto the clustered event table afterwards for interpretation. This allows checks such as:
-
-- measured blockade versus dwell time,
-- resolved-level composition,
-- deepest-state occupancy,
-- fold-contrast/occupancy maps,
-- ECD and measured blockade distributions,
-- real member traces and median representative waveforms.
-
-An event can therefore belong to a valid dataset-feature cluster even if its step fit is not suitable for resolved-level interpretation. This avoids allowing a PELT/step-fitting assumption to manufacture the clustering structure.
-
-## Waveform panels
-
-Each cluster panel shows a deterministic sample of real member profiles as faint curves and the pointwise median of **all** cluster members as the bold representative. No percentile envelope is used. The overlay figure also contains representative curves only.
-
-## Files
-
-Replace the repository files together and keep the deployment names exactly:
-
-- `app.py`
-- `analysis.py`
-- `physical.py`
-- `plots.py`
-- `workflow.py`
-- `requirements.txt`
-
-Run:
-
-```bash
-pip install -r requirements.txt
-python -m streamlit run app.py
-```
-
-`python check_app.py` runs a lightweight synthetic regression test for the dataset-feature clustering engine. `python check_physical.py` checks the resolved-level interpretation descriptors.
-
-## Scientific caution
-
-The resulting groups are unsupervised **signal families**, not automatically unfolded/folded DNA labels. Elbow, silhouette, PCA separation and clustering stability describe geometry, not biological truth. Use waveform families and independent physical descriptors to decide whether a cluster has a defensible conformation interpretation.
+Clustering still uses the selected original `dataset.npz` feature columns with MinMax scaling to `[-1, 1]`, PCA, and Ward agglomerative or k-means. Changing the event-family horizontal coordinate does **not** change PCA coordinates or cluster assignments.

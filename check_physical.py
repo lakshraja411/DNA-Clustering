@@ -64,3 +64,19 @@ np.testing.assert_allclose(r.deepest_plateau_position,.4,rtol=1e-10)
 assert 0 < r.blockade_temporal_centroid < 1
 assert np.isfinite(r.blockade_skewness) and np.isfinite(r.ecd_nA_ms)
 print('PASS: weighted mean/range, reference normalisation, deepest-state occupancy/position, temporal centroid, skewness and measured ECD.')
+
+
+# DNA-conformation model v1: six clustering descriptors have known behaviour.
+one=event(30,[1],[200])
+two_early=event(31,[2,1],[100,100])
+two_late=event(32,[1,2],[100,100])
+a,_=level_features([one,two_early,two_late],omit_short_boundaries=False)
+assert a.clustering_eligible.tolist()==[True,True,True]
+np.testing.assert_allclose(a.deep_to_shallow_ratio,[1,2,2])
+np.testing.assert_allclose(a.log10_deep_to_shallow_ratio,[0,np.log10(2),np.log10(2)])
+np.testing.assert_allclose(a.deepest_plateau_fraction,[1,.5,.5])
+np.testing.assert_allclose(a.resolved_shape_complexity.iloc[0],0,atol=1e-12)
+np.testing.assert_allclose(a.resolved_shape_complexity.iloc[1:],1/3,rtol=1e-10)
+np.testing.assert_allclose(a.measured_mean_blockade_nA,[1,1.5,1.5],rtol=1e-10)
+assert a.measured_temporal_centroid.iloc[1] < .5 < a.measured_temporal_centroid.iloc[2]
+print('PASS: six-feature DNA-conformation model gives ratio=1 for one level, ratio=2 for 2:1 levels, correct occupancy/complexity, measured mean and temporal direction.')

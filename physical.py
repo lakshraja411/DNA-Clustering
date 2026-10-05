@@ -6,13 +6,18 @@ they cannot be resolved under the declared amplitude/noise criterion, and platea
 persist for the declared minimum time.  The original trace, fit and event boundaries are
 never modified.
 """
-RELEASE_VERSION='0.6.4'
+RELEASE_VERSION='0.7.0'
 import numpy as np
 import pandas as pd
 from analysis import mask
 
 PHYSICAL_DESCRIPTIONS={
  'duration_ms':'Detected event end minus start (ms). Kinetic descriptor; total detected duration is preserved even when short edge plateaus are omitted.',
+ 'measured_mean_blockade_nA':'Time-averaged measured blockade over the detected event, obtained from measured ECD divided by total event duration (nA).',
+ 'deep_to_shallow_ratio':'Deepest retained resolved plateau divided by the shallowest retained resolved plateau. Equal to 1 for a one-level event; requires the shallow level to be resolved above local noise.',
+ 'log10_deep_to_shallow_ratio':'Base-10 logarithm of the deep-to-shallow plateau ratio. Used for clustering to reduce the leverage of large ratios.',
+ 'measured_temporal_centroid':'Blockade-area centre calculated directly from the measured trace in normalised event time. <0.5 means measured blockade is weighted earlier; >0.5 means later.',
+ 'resolved_shape_complexity':'Duration-weighted SD of resolved plateau heights divided by their duration-weighted mean. Zero for a perfectly one-level resolved event.',
  'log10_duration_ms':'Base-10 logarithm of detected event duration in ms. Used for clustering so long dwell-time tails do not dominate the PCA scale.',
  'resolved_weighted_mean_nA':'Duration-weighted mean blockade of the retained resolved plateaus (nA). This is the typical sustained blockade state after level QC.',
  'resolved_weighted_mean_ratio':'Duration-weighted resolved blockade divided by the user-supplied condition-specific single-file reference.',
@@ -34,12 +39,29 @@ PHYSICAL_DESCRIPTIONS={
 }
 
 
-def _measured_ecd_ms(e,m):
-    """Integral of measured blockade over the detected event in nA·ms."""
+def _measured_event_moments(e,m):
+    """Measured ECD, mean blockade and temporal centroid over detected bounds.
+
+    The integration uses the experimental blockade trace, not the step fit.  The
+    temporal centroid is therefore an independent waveform-asymmetry descriptor.
+    """
     b=e.baseline-e.current
     x=np.r_[e.bounds[0],e.time[m],e.bounds[1]]
     y=np.interp(x,e.time,b)
-    return float(np.trapezoid(y,x)*1000.)
+    duration=float(e.bounds[1]-e.bounds[0])
+    area=float(np.trapezoid(y,x))
+    ecd=area*1000.
+    samples=b[m]
+    mean=float(np.mean(samples)) if len(samples) else np.nan
+    tau_samples=(e.time[m]-e.bounds[0])/duration if duration>0 else np.zeros_like(samples)
+    sample_mass=float(np.sum(samples))
+    centroid=float(np.sum(tau_samples*samples)/sample_mass) if sample_mass>1e-15 else .5
+    return float(ecd),float(mean),float(centroid)
+
+
+def _measured_ecd_ms(e,m):
+    """Backward-compatible measured ECD helper."""
+    return _measured_event_moments(e,m)[0]
 
 
 def level_features(events,source='Selected fits',min_duration_us=25.,min_height_nA=.1,noise_multiplier=3.,reference_nA=None,deep_threshold_nA=None,omit_short_boundaries=True):
@@ -57,7 +79,7 @@ def level_features(events,source='Selected fits',min_duration_us=25.,min_height_
     if deep_threshold_nA is not None and (not np.isfinite(deep_threshold_nA) or deep_threshold_nA<=0):raise ValueError('Deeper-blockade threshold must be positive and finite.')
     rows=[];sequences=[]
     for e in events:
-        row={'event_index':e.index,'physical_eligible':False,'physical_exclusion_reason':''}
+        row={'event_index':e.index,'physical_eligible':False,'physical_exclusion_reason':'','clustering_eligible':False,'clustering_exclusion_reason':''}
         try:
             if e.fit is None:raise ValueError('missing step fit; refine using PELT or segment means')
             m=mask(e);t=e.time[m];fit=(e.baseline-e.fit)[m];observed=(e.baseline-e.current)[m]
@@ -148,21 +170,41 @@ def level_features(events,source='Selected fits',min_duration_us=25.,min_height_
                 skew=float(np.sum(widths*(heights-weighted_mean)**3)/total/(weighted_std**3))
             else:skew=0.
 
+            ecd,measured_mean,measured_centroid=_measured_event_moments(e,m)
+            shallowest=float(heights.min())
+            # A one-level event has an exact within-event ratio of 1 and needs no
+            # denominator test.  For multilevel events, require the shallow state to
+            # exceed the local robust noise scale before forming a physical ratio.
+            ratio_floor=max(noise,1e-12)
+            one_level=len(resolved)==1
+            ratio_ok=bool((one_level or shallowest>ratio_floor) and deepest>0 and weighted_mean>1e-12 and shallowest>0)
+            deep_ratio=1.0 if one_level and deepest>0 else (float(deepest/shallowest) if ratio_ok else np.nan)
+            shape_complexity=float(weighted_std/weighted_mean) if weighted_mean>1e-12 else np.nan
+
             row.update(
+                measured_mean_blockade_nA=measured_mean,
                 resolved_weighted_mean_nA=weighted_mean,
                 deepest_plateau_nA=deepest,
+                deep_to_shallow_ratio=deep_ratio,
+                log10_deep_to_shallow_ratio=float(np.log10(deep_ratio)) if ratio_ok else np.nan,
                 resolved_blockade_range_nA=span,
                 resolved_weighted_std_nA=weighted_std,
-                ecd_nA_ms=_measured_ecd_ms(e,m),
+                resolved_shape_complexity=shape_complexity,
+                ecd_nA_ms=ecd,
                 resolved_transitions=len(resolved)-1,
                 transition_direction=direction,
                 deepest_plateau_fraction=deepest_fraction,
                 deepest_plateau_position=deepest_position,
+                measured_temporal_centroid=measured_centroid,
                 blockade_temporal_centroid=temporal_centroid,
                 blockade_skewness=skew,
                 duration_ms=duration*1000,
                 log10_duration_ms=float(np.log10(duration*1000.)),
                 physical_eligible=True)
+            if ratio_ok:
+                row['clustering_eligible']=True
+            else:
+                row['clustering_exclusion_reason']=f'shallowest resolved blockade ({shallowest:.4g} nA) is not above the local robust noise scale ({ratio_floor:.4g} nA); deep/shallow ratio is unstable'
 
             if reference_nA is not None:
                 row['resolved_weighted_mean_ratio']=weighted_mean/reference_nA
@@ -174,6 +216,7 @@ def level_features(events,source='Selected fits',min_duration_us=25.,min_height_
                 row['threshold_sensitive']=bool(np.any(np.abs(heights-deep_threshold_nA)<=height_tol))
         except ValueError as ex:
             row['physical_exclusion_reason']=str(ex)
+            row['clustering_exclusion_reason']=str(ex)
         rows.append(row)
 
     seq_columns=['event_index','level_order','start_from_event_ms','duration_ms','blockade_nA','source','level_status','used_for_features','event_eligible']

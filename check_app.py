@@ -54,7 +54,7 @@ assert at.session_state['group']['meta']['clustering']['source']=='Selected fits
 assert at.session_state['group']['meta']['clustering']['selection'].startswith('manual after elbow')
 assert 2<=at.session_state['group']['meta']['clustering']['k']<=8
 assert at.session_state['group']['scan']['table']
-assert at.session_state['group']['meta']['clustering']['feature_set']=='five-feature DNA physical core'
+assert at.session_state['group']['meta']['clustering']['feature_set']=='six-feature DNA-conformation model v1'
 assert len(at.session_state['group']['sequences'])
 g=at.session_state['group'];assert len(g['table'])+len(g['excluded'])==len(small)
 assert any(h.value=='A · Statistical clustering result' for h in at.subheader)
@@ -85,4 +85,4 @@ step(1);assert at.session_state['recording_confirmed'];assert at.session_state['
 step(2);assert at.session_state['refs']
 button('Clear files and start over').click().run();assert not at.exception
 assert 'project' not in at.session_state and 'refs' not in at.session_state
-print('PASS: three-file matching; refined-fit preservation; five-feature DNA clustering core; robust scaling; elbow/silhouette diagnostics; physical interpretation plots; median waveform profiles; cluster subset alignment and exports.')
+print('PASS: three-file matching; refined-fit preservation; six-feature DNA-conformation clustering model; robust scaling; elbow/silhouette diagnostics; physical interpretation plots; median waveform profiles; cluster subset alignment and exports.')

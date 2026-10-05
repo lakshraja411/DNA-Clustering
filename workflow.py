@@ -1,5 +1,5 @@
 """Explicit fit selection and roundtrip exports for the guided workflow."""
-RELEASE_VERSION='0.6.4'
+RELEASE_VERSION='0.7.0'
 from dataclasses import replace
 import io,json,zipfile
 import numpy as np

@@ -1,4 +1,4 @@
-RELEASE_VERSION='0.6.4'
+RELEASE_VERSION='0.7.0'
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -324,14 +324,30 @@ def member_profile_figure_hart(profiles,labels,centers,group,limit=60):
 
 
 
-def blockade_dwell_figure(table,blockade_col='clustering_resolved_weighted_mean_nA'):
-    """Direct physical view: dwell time versus duration-weighted sustained blockade."""
+def blockade_dwell_figure(table,blockade_col='clustering_measured_mean_blockade_nA'):
+    """Direct physical view: detected dwell time versus measured mean blockade."""
     d=table[np.isfinite(table['duration_ms'])&np.isfinite(table[blockade_col])&(table['duration_ms']>0)].copy()
     d['Cluster']=d['cluster'].astype(str)
     f=px.scatter(d,x='duration_ms',y=blockade_col,color='Cluster',log_x=True,opacity=.55,
                  hover_data=[c for c in ['event_index','clustering_deepest_plateau_nA','clustering_resolved_levels'] if c in d],
-                 labels={'duration_ms':'Dwell time (ms)',blockade_col:'Duration-weighted resolved blockade (nA)'},
+                 labels={'duration_ms':'Dwell time (ms)',blockade_col:'Measured mean blockade (nA)'},
                  color_discrete_sequence=PALETTE)
+    f.update_layout(height=450)
+    return f
+
+
+def fold_state_figure(table,ratio_col='clustering_deep_to_shallow_ratio',occupancy_col='clustering_deepest_plateau_fraction'):
+    """Physical fold-state map: relative deep-state amplitude versus occupancy."""
+    need=['cluster',ratio_col,occupancy_col]
+    if any(c not in table for c in need):return go.Figure()
+    d=table[need+([c for c in ['event_index','duration_ms','clustering_resolved_levels'] if c in table])].dropna().copy()
+    d=d[np.isfinite(d[ratio_col])&np.isfinite(d[occupancy_col])&(d[ratio_col]>=1)]
+    d['Cluster']=d['cluster'].astype(str)
+    f=px.scatter(d,x=occupancy_col,y=ratio_col,color='Cluster',opacity=.55,
+                 hover_data=[c for c in ['event_index','duration_ms','clustering_resolved_levels'] if c in d],
+                 labels={occupancy_col:'Fraction of analysed duration in deepest state',ratio_col:'Deep / shallow resolved blockade ratio'},
+                 color_discrete_sequence=PALETTE)
+    f.add_hline(y=1,line_dash='dot',line_width=1)
     f.update_layout(height=450)
     return f
 
@@ -379,8 +395,8 @@ def physical_feature_distributions_figure(table):
     from plotly.subplots import make_subplots
     specs=[
         ('duration_ms','Dwell time (ms)'),
-        ('clustering_resolved_weighted_mean_nA','Weighted blockade (nA)'),
-        ('clustering_deepest_plateau_nA','Deepest sustained blockade (nA)'),
+        ('clustering_measured_mean_blockade_nA','Measured mean blockade (nA)'),
+        ('clustering_deep_to_shallow_ratio','Deep / shallow blockade ratio'),
         ('clustering_ecd_nA_ms','ECD (nA·ms)'),
     ]
     f=make_subplots(rows=2,cols=2,subplot_titles=[b for _,b in specs])
@@ -446,19 +462,19 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
 
 
         # Main physical interpretation: blockade versus dwell.
-        if 'clustering_resolved_weighted_mean_nA' in feature_table:
+        if 'clustering_measured_mean_blockade_nA' in feature_table:
             fig,ax=plt.subplots(figsize=(6.2,4.5),layout='constrained')
             for j in range(k):
                 sub=feature_table[feature_table.cluster==j]
-                ax.scatter(sub.duration_ms,sub.clustering_resolved_weighted_mean_nA,s=8,alpha=.45,
+                ax.scatter(sub.duration_ms,sub.clustering_measured_mean_blockade_nA,s=8,alpha=.45,
                            edgecolors='none',color=PALETTE[j%len(PALETTE)],label=f'Cluster {j}')
-            ax.set_xscale('log');ax.set_xlabel('Dwell time (ms)');ax.set_ylabel('Duration-weighted resolved blockade (nA)')
+            ax.set_xscale('log');ax.set_xlabel('Dwell time (ms)');ax.set_ylabel('Measured mean blockade (nA)')
             ax.legend(frameon=False,fontsize=8);save(fig,'main_blockade_vs_dwell')
 
         # Main physical feature distributions.
         dist_fields=[('duration_ms','Dwell time (ms)'),
-                     ('clustering_resolved_weighted_mean_nA','Weighted blockade (nA)'),
-                     ('clustering_deepest_plateau_nA','Deepest sustained blockade (nA)'),
+                     ('clustering_measured_mean_blockade_nA','Measured mean blockade (nA)'),
+                     ('clustering_deep_to_shallow_ratio','Deep / shallow blockade ratio'),
                      ('clustering_ecd_nA_ms','ECD (nA·ms)')]
         fig,axes=plt.subplots(2,2,figsize=(9,6.5),layout='constrained')
         for ax,(field,label) in zip(axes.flat,dist_fields):

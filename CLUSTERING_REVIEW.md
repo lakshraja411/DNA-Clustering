@@ -1,6 +1,10 @@
-# Version 0.6.4 PCA scaling correction
+# 0.7.0 clustering model note
 
-The v0.6.3 median/IQR scaling could become numerically unstable when a plateau-derived feature had an almost-zero but non-zero IQR. This could generate billion-scale PCA coordinates and an artificial PC1≈100% result. v0.6.4 treats a feature with effectively zero Q05-Q95 spread as uninformative for the global PCA and otherwise uses a safeguarded robust denominator `max(IQR, 0.25*(Q95-Q05))`. Raw physical values remain unchanged and remain available for interpretation.
+The primary clustering representation is deliberately frozen to six physically interpretable DNA descriptors rather than a broad feature library. A stable deep/shallow ratio is required; events whose shallowest resolved blockade is not above the local robust noise scale for multilevel events remain auditable but are excluded from this model. This is an unsupervised signal-family model, not a validated topology classifier. Cluster number remains a user decision informed by elbow/silhouette diagnostics and waveform/physical interpretation.
+
+# Version 0.7.0 PCA scaling correction
+
+The v0.6.3 median/IQR scaling could become numerically unstable when a plateau-derived feature had an almost-zero but non-zero IQR. This could generate billion-scale PCA coordinates and an artificial PC1≈100% result. v0.7.0 treats a feature with effectively zero Q05-Q95 spread as uninformative for the global PCA and otherwise uses a safeguarded robust denominator `max(IQR, 0.25*(Q95-Q05))`. Raw physical values remain unchanged and remain available for interpretation.
 
 # Version 0.6.2 clustering design
 

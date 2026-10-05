@@ -1,8 +1,12 @@
-# DNA Event Lab v0.6.4
+# DNA Event Lab 0.7.0 — DNA-conformation clustering model v1
+
+Step 5 now uses a predeclared six-feature clustering vector: `log10_duration_ms`, `measured_mean_blockade_nA`, `log10_deep_to_shallow_ratio`, `deepest_plateau_fraction`, `measured_temporal_centroid`, and `resolved_shape_complexity`. Duration and the within-event deep/shallow ratio are log transformed only for clustering. Mean blockade and temporal centroid are measured directly from the recorded trace; ratio, occupancy and shape complexity come from QC-resolved sustained levels. ECD, integer level count, absolute deepest blockade and transition direction remain post-cluster interpretation/QC variables. Agglomerative Ward and k-means use the same robust-scaled PCA space. Waveform panels show faint real members plus the pointwise median, with no percentile band.
+
+# DNA Event Lab v0.7.0
 
 ## PCA scaling hotfix
 
-Version 0.6.4 fixes a numerical pathology in the v0.6.3 PCA preprocessing. Plateau-derived descriptors can be nearly constant for most events while retaining a very small non-zero IQR. Dividing by that microscopic IQR can create PCA coordinates of order 10^9 and make PC1 appear to explain ~100% of the variance. The clustering is not physically interpretable in that state.
+Version 0.7.0 fixes a numerical pathology in the v0.6.3 PCA preprocessing. Plateau-derived descriptors can be nearly constant for most events while retaining a very small non-zero IQR. Dividing by that microscopic IQR can create PCA coordinates of order 10^9 and make PC1 appear to explain ~100% of the variance. The clustering is not physically interpretable in that state.
 
 The new preprocessing removes features whose central 90% spread is effectively zero, prunes near-duplicates, centres retained variables at the median, and scales by `max(IQR, 0.25*(Q95-Q05))`. Step 5 now displays a feature-spread QC table so the actual denominator and any dropped descriptor are visible.
 

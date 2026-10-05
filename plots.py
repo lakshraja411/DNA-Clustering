@@ -1,4 +1,4 @@
-RELEASE_VERSION='0.8.2'
+RELEASE_VERSION='0.8.3'
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -50,7 +50,6 @@ def profile_figure(profiles,labels,centers,units='nA',x=None,x_label='Normalized
     for j,c in enumerate(centers):
         n=int(np.sum(labels==j))
         f.add_trace(go.Scatter(x=x,y=c,line=dict(color=palette[j%len(palette)],width=2.2),name=f'Cluster {j} (n={n})'))
-    if event_start_x is not None:f.add_vline(x=float(event_start_x),line_dash='dot',line_color='#777777',opacity=.7)
     f.update_layout(xaxis_title=x_label,yaxis_title=f'Profile ({units})',height=420)
     if x_range is not None:f.update_xaxes(range=list(x_range))
     if y_range is not None:f.update_yaxes(range=list(y_range))
@@ -126,7 +125,6 @@ def profile_archive(profiles,labels,centers,y_range=None,x=None,x_label='Normali
             ax.plot(x,center,color=color,lw=1.8,label=f'Cluster {j} (n={len(members)})')
             for pos,t in enumerate(x):
                 rows.append({'cluster':j,x_name:float(t),'median_representative_blockade_nA':center[pos],'events':len(members)})
-        if event_start_x is not None:ax.axvline(float(event_start_x),ls=':',lw=.9,color='0.45')
         ax.set_xlabel(x_label);ax.set_ylabel('Current blockade (nA)')
         if x_range is not None:ax.set_xlim(*x_range)
         if y_range is not None:ax.set_ylim(*y_range)
@@ -328,7 +326,6 @@ def member_profile_figure_hart(profiles,labels,centers,group,limit=60,x=None,x_l
                                showlegend=False,hoverinfo='skip',connectgaps=False))
     f.add_trace(go.Scatter(x=x,y=centers[group],mode='lines',
                            line=dict(color='#D62728',width=2.6),name='Median representative',connectgaps=False))
-    if event_start_x is not None:f.add_vline(x=float(event_start_x),line_dash='dot',line_color='#777777',opacity=.7)
     f.update_layout(title=f'Cluster {group} · n={len(members)}',
                     xaxis_title=x_label,yaxis_title='Blockade (nA)',height=310)
     if x_range is not None:f.update_xaxes(range=list(x_range))
@@ -497,13 +494,11 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
             ids=np.flatnonzero(labels==j);sample=np.sort(rng.choice(ids,min(60,len(ids)),replace=False))
             for pos in sample:ax.plot(family_x,profiles[pos],color='0.45',alpha=.10,lw=.5)
             ax.plot(family_x,centers[j],color='#D62728',lw=1.8);ax.set_title(f'Cluster {j} (n={len(ids)})');ax.set_xlabel(family_x_label);ax.set_ylabel('Blockade (nA)');ax.set_xlim(*profile_xlim);ax.set_ylim(*profile_ylim)
-            if family_event_start is not None:ax.axvline(float(family_event_start),ls=':',lw=.8,color='0.45')
         save(fig,'main_cluster_profiles')
 
         fig,ax=plt.subplots(figsize=(6.2,4.3),layout='constrained')
         for j,c in enumerate(centers):ax.plot(family_x,c,lw=1.7,color=PALETTE[j%len(PALETTE)],label=f'Cluster {j}')
         ax.set_xlabel(family_x_label);ax.set_ylabel('Blockade (nA)');ax.set_xlim(*profile_xlim);ax.set_ylim(*profile_ylim)
-        if family_event_start is not None:ax.axvline(float(family_event_start),ls=':',lw=.8,color='0.45')
         ax.legend(frameon=False);save(fig,'main_representative_overlay')
 
 
@@ -589,6 +584,6 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         z.writestr('cluster_features.csv',feature_table.to_csv(index=False));z.writestr('cluster_summary.csv',cluster_summary.to_csv(index=False))
         z.writestr('pca_coordinates.csv',pd.DataFrame({'event_id':event_ids,'cluster':labels,'PC1':emb[:,0],'PC2':emb[:,1]}).to_csv(index=False))
         z.writestr('representative_profiles.csv',pd.DataFrame([{'cluster':j,family_x_name:float(t),'blockade_nA':float(v)} for j,c in enumerate(centers) for t,v in zip(family_x,c)]).to_csv(index=False))
-        z.writestr('README.txt',('Hart-style DNA clustering export generated from the current recording. Main-style outputs: PCA cluster map without convex-hull fills, per-cluster member traces with median representatives, and representative overlay. The event-family horizontal coordinate is '+family_x_label+'. Data-index/time modes use real recorded samples aligned at the detected event start and do not stretch individual event durations. Supplementary-style outputs: scree plot, elbow-silhouette scan, optional 3-PC view, and Ward dendrogram for agglomerative clustering. These are analysis analogues, not reproductions of published artwork. Cluster labels denote signal families only; physical/topological assignments require independent interpretation.'))
+        z.writestr('README.txt',('Hart-style DNA clustering export generated from the current recording. Main-style outputs: PCA cluster map without convex-hull fills, per-cluster member traces with median representatives, and representative overlay. The event-family horizontal coordinate is '+family_x_label+'. Data-index/time modes use real recorded samples centred on each detected event midpoint and do not stretch individual event durations. Supplementary-style outputs: scree plot, elbow-silhouette scan, optional 3-PC view, and Ward dendrogram for agglomerative clustering. These are analysis analogues, not reproductions of published artwork. Cluster labels denote signal families only; physical/topological assignments require independent interpretation.'))
         z.writestr('settings.json',json.dumps({'source':source,'method':method,'n_components':info.get('n_components'),'silhouette':info.get('silhouette'),'calinski_harabasz':info.get('calinski_harabasz'),'davies_bouldin':info.get('davies_bouldin'),'axis_settings':axis_settings},indent=2))
     return out.getvalue()

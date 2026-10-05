@@ -1,5 +1,5 @@
 """Nanopore Shape Lab 0.4: explicit signal processing and lossless event subsets."""
-RELEASE_VERSION='0.8.2'
+RELEASE_VERSION='0.8.3'
 from dataclasses import dataclass
 import io, json, re, zipfile
 import numpy as np
@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.8.2'
+VERSION='0.8.3'
 @dataclass
 class Event:
     index:int
@@ -148,23 +148,63 @@ def profile(e,bins,fit=None):
     y=e.baseline-(e.current if fit is None else fit)
     return np.interp((np.arange(bins)+.5)/bins,(e.time-e.bounds[0])/np.diff(e.bounds)[0],y)
 
-def aligned_event_profiles(events,pre_samples=100,post_samples=100):
-    """Return real-sample blockade traces aligned to the detected event start.
+def aligned_event_profiles(events,pre_samples=100,post_samples=100,alignment='start',window_samples=None):
+    """Return real-sample blockade traces on a common horizontal coordinate.
 
-    The common window begins ``pre_samples`` before the first in-event sample and
-    extends through the longest detected event plus ``post_samples``.  No time
-    stretching is performed: one horizontal step is one recorded sample. Missing
-    samples outside an event's saved trace are left as NaN rather than fabricated.
+    ``alignment='start'`` reproduces the older view: the detected event start is
+    placed after ``pre_samples`` and the window extends through the longest event
+    plus ``post_samples``.
+
+    ``alignment='midpoint'`` is the Hart-style display used by default in v0.8.3.
+    Every detected event midpoint is placed at the centre of a fixed-length sample
+    window (``window_samples``).  No event is stretched or compressed, so dwell-time
+    differences remain visible while baseline is shown before and after the event.
+    Samples falling outside the stored trace are left as NaN rather than invented.
     """
     events=list(events)
     pre_samples=int(pre_samples);post_samples=int(post_samples)
     if not events:raise ValueError('Need at least one event for aligned profiles.')
     if pre_samples<0 or post_samples<0:raise ValueError('Pre/post sample counts must be nonnegative.')
-    starts=[];lengths=[];dts=[]
+    starts=[];ends=[];lengths=[];dts=[]
     for e in events:
         m=mask(e);idx=np.flatnonzero(m)
         if not len(idx):raise ValueError(f'Event {e.index} has no samples inside its detected bounds.')
-        starts.append(int(idx[0]));lengths.append(int(len(idx)));dts.append(float(np.median(np.diff(e.time))))
+        starts.append(int(idx[0]));ends.append(int(idx[-1]));lengths.append(int(len(idx)));dts.append(float(np.median(np.diff(e.time))))
+    dt_s=float(np.median(dts));sampling_hz=float(1./dt_s) if dt_s>0 else np.nan
+
+    alignment=str(alignment).lower()
+    if alignment=='midpoint':
+        if window_samples is None:window_samples=max(200,int(np.ceil(np.percentile(lengths,95)))+200)
+        total=max(20,int(window_samples));center=int(total//2)
+        profiles=np.full((len(events),total),np.nan,float)
+        aligned_starts=[];aligned_ends=[]
+        for i,(e,start,end) in enumerate(zip(events,starts,ends)):
+            blockade=np.asarray(e.baseline-e.current,float)
+            midpoint=int(round((start+end)/2))
+            source_left=midpoint-center;source_right=source_left+total
+            src0=max(0,source_left);src1=min(len(blockade),source_right)
+            if src1>src0:
+                dst0=src0-source_left;dst1=dst0+(src1-src0)
+                profiles[i,dst0:dst1]=blockade[src0:src1]
+            aligned_starts.append(start-source_left);aligned_ends.append(end-source_left)
+        return dict(
+            profiles=profiles,
+            data_index=np.arange(total,dtype=float),
+            relative_index=np.arange(total,dtype=float)-center,
+            time_ms=(np.arange(total,dtype=float)-center)*dt_s*1000.,
+            event_midpoint_index=int(center),
+            event_start_indices=np.asarray(aligned_starts,float),
+            event_end_indices=np.asarray(aligned_ends,float),
+            event_lengths_samples=np.asarray(lengths,int),
+            coverage=np.sum(np.isfinite(profiles),axis=0),
+            time_step_s=dt_s,
+            sampling_rate_hz=sampling_hz,
+            alignment='midpoint',
+            window_samples=int(total),
+            relative_dt_spread=float(np.max(np.abs(np.asarray(dts,float)-dt_s))/dt_s) if dt_s>0 else np.nan,
+        )
+
+    if alignment!='start':raise ValueError("alignment must be 'start' or 'midpoint'.")
     event_span=max(lengths);total=pre_samples+event_span+post_samples
     profiles=np.full((len(events),total),np.nan,float)
     for i,(e,start) in enumerate(zip(events,starts)):
@@ -174,7 +214,6 @@ def aligned_event_profiles(events,pre_samples=100,post_samples=100):
         if src1<=src0:continue
         dst0=src0-source_left;dst1=dst0+(src1-src0)
         profiles[i,dst0:dst1]=blockade[src0:src1]
-    dt_s=float(np.median(dts));sampling_hz=float(1./dt_s) if dt_s>0 else np.nan
     return dict(
         profiles=profiles,
         data_index=np.arange(total,dtype=float),
@@ -185,6 +224,7 @@ def aligned_event_profiles(events,pre_samples=100,post_samples=100):
         coverage=np.sum(np.isfinite(profiles),axis=0),
         time_step_s=dt_s,
         sampling_rate_hz=sampling_hz,
+        alignment='start',
         relative_dt_spread=float(np.max(np.abs(np.asarray(dts,float)-dt_s))/dt_s) if dt_s>0 else np.nan,
     )
 

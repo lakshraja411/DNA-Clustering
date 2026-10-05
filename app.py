@@ -18,7 +18,7 @@ _REQUIRED = {
 }
 _missing = {filename:[name for name in names if not hasattr(module,name)] for filename,(module,names) in _REQUIRED.items()}
 _missing = {filename:names for filename,names in _missing.items() if names}
-_EXPECTED_RELEASE='0.8.2'
+_EXPECTED_RELEASE='0.8.3'
 _version_mismatch={filename:getattr(module,'RELEASE_VERSION',None) for filename,(module,_) in _REQUIRED.items() if getattr(module,'RELEASE_VERSION',None)!=_EXPECTED_RELEASE}
 if _missing or _version_mismatch:
     st.error('DNA Event Lab file-version mismatch: helper files are not all from release '+_EXPECTED_RELEASE+'.')
@@ -35,7 +35,7 @@ from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
 from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure,fold_state_figure
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
-st.title('DNA Event Lab · v0.8.2')
+st.title('DNA Event Lab · v0.8.3')
 st.caption('Load → inspect → refine → plot → cluster → save')
 st.sidebar.title('Your analysis')
 S=st.session_state
@@ -651,39 +651,43 @@ elif step.startswith('5'):
             phys_ok=int(phys_audit.set_index('event_index').reindex(table.event_index).physical_eligible.fillna(False).sum()) if 'physical_eligible' in phys_audit else 0
             st.caption(f'Resolved-level interpretation is available for {phys_ok} of the {len(table)} clustered events. Events without resolved plateau features remain valid cluster members.')
 
-        # Event-family horizontal coordinate.  Data-index / real-time modes use the
-        # original recorded samples aligned at the detected event start, so dwell-time
-        # differences remain visible.  The normalized view is kept as an optional
-        # shape-only comparison and is labelled explicitly rather than as a vague
-        # 'fraction of event duration'.
+        # Cluster-family display controls are intentionally prominent rather than
+        # hidden in an expander.  The default Hart-style view centres each detected
+        # event on its midpoint in a fixed sample window, preserving real duration
+        # while showing baseline before and after the event.
         profile_events_display=signal_events(eligible_active,profile_source)
-        with st.expander('Event-family horizontal axis',expanded=True):
-            family_modes=['Data index (sample number)','Time relative to detected event start (ms)','Normalized event position (0 = start, 1 = end)']
-            previous_mode=S.get('family_x_mode',family_modes[0])
-            if previous_mode not in family_modes:previous_mode=family_modes[0]
-            family_mode=st.radio('Horizontal coordinate for cluster-family traces',family_modes,index=family_modes.index(previous_mode),key='family_x_mode')
-            if family_mode==family_modes[2]:
-                family_profiles=np.asarray(info['profiles'],float);family_centers=np.asarray(info['centers'],float)
-                family_x=(np.arange(family_profiles.shape[1])+.5)/family_profiles.shape[1]
-                family_x_label='Normalized event position (0 = start, 1 = end)';family_x_name='normalized_event_position';family_event_start=None
-                st.caption('This view stretches every detected event to the same 0–1 coordinate. It is useful for comparing shape, but absolute dwell-time differences are intentionally removed.')
+        st.subheader('Cluster-family display controls')
+        family_modes=['Data index (sample number)','Time relative to event midpoint (ms)','Normalized event position (0 = start, 1 = end)']
+        previous_mode=S.get('family_x_mode',family_modes[0])
+        if previous_mode not in family_modes:previous_mode=family_modes[0]
+        family_mode=st.radio('Horizontal axis for cluster-family traces',family_modes,index=family_modes.index(previous_mode),key='family_x_mode',horizontal=True)
+        if family_mode==family_modes[2]:
+            family_profiles=np.asarray(info['profiles'],float);family_centers=np.asarray(info['centers'],float)
+            family_x=(np.arange(family_profiles.shape[1])+.5)/family_profiles.shape[1]
+            family_x_label='Normalized event position (0 = start, 1 = end)';family_x_name='normalized_event_position';family_event_start=None
+            st.caption('Shape-only view: every event is stretched/compressed to 0–1, so absolute dwell-time differences are intentionally removed.')
+        else:
+            lengths=np.asarray([int(np.sum((e.time>=e.bounds[0])&(e.time<=e.bounds[1]))) for e in profile_events_display],int)
+            suggested=max(300,int(np.ceil(np.percentile(lengths,95)/50.)*50)+200) if len(lengths) else 500
+            suggested=min(max(suggested,300),5000)
+            window_samples=int(st.number_input('Centered display window length (samples)',min_value=100,max_value=10000,value=int(S.get('family_window_samples',suggested)),step=50,key='family_window_samples',help='Each detected event midpoint is placed at the centre of this fixed window. Events are not stretched. Very long events can be visually clipped if the window is too short; clustering is unaffected.'))
+            aligned=aligned_event_profiles(profile_events_display,alignment='midpoint',window_samples=window_samples)
+            family_profiles=np.asarray(aligned['profiles'],float)
+            family_centers,_=cluster_median_profiles(family_profiles,info['labels'],.5)
+            if family_mode==family_modes[0]:
+                family_x=np.asarray(aligned['data_index'],float)
+                family_x_label=f'Data index (sample number; event midpoint = {aligned["event_midpoint_index"]})';family_x_name='data_index'
             else:
-                cpre,cpost=st.columns(2)
-                pre_samples=int(cpre.number_input('Samples shown before detected event start',min_value=0,max_value=5000,value=int(S.get('family_pre_samples',100)),step=10,key='family_pre_samples'))
-                post_samples=int(cpost.number_input('Samples shown after the longest detected event',min_value=0,max_value=5000,value=int(S.get('family_post_samples',100)),step=10,key='family_post_samples'))
-                aligned=aligned_event_profiles(profile_events_display,pre_samples,post_samples)
-                family_profiles=np.asarray(aligned['profiles'],float)
-                family_centers,_=cluster_median_profiles(family_profiles,info['labels'],.5)
-                if family_mode==family_modes[0]:
-                    family_x=np.asarray(aligned['data_index'],float);family_event_start=float(aligned['event_start_index'])
-                    family_x_label=f'Data index (sample number; event start = {aligned["event_start_index"]})';family_x_name='data_index'
-                else:
-                    family_x=np.asarray(aligned['time_ms'],float);family_event_start=0.
-                    family_x_label='Time relative to detected event start (ms)';family_x_name='time_from_event_start_ms'
-                fs=aligned.get('sampling_rate_hz',np.nan);dt_us=1e6*aligned.get('time_step_s',np.nan)
-                st.caption(f'No event-time stretching is applied. The common window contains {len(family_x)} recorded sample positions; the longest detected event contains {int(np.max(aligned["event_lengths_samples"]))} samples. Median sampling interval = {dt_us:.3g} µs'+(f' ({fs/1000:.3g} kHz).' if np.isfinite(fs) else '.'))
-                if aligned.get('relative_dt_spread',0.)>.01:st.warning('Sampling intervals vary by more than 1% across these events. Data index is still valid as sample number, but the shared millisecond axis should be interpreted cautiously.')
-                st.caption('The red representative is the pointwise cluster median. A median point is drawn only where at least 50% of that cluster has recorded samples; missing trace padding is never invented.')
+                family_x=np.asarray(aligned['time_ms'],float)
+                family_x_label='Time relative to event midpoint (ms)';family_x_name='time_from_event_midpoint_ms'
+            family_event_start=None
+            fs=aligned.get('sampling_rate_hz',np.nan);dt_us=1e6*aligned.get('time_step_s',np.nan)
+            n_long=int(np.sum(aligned['event_lengths_samples']>window_samples))
+            st.caption(f'Each event midpoint is centred in a {window_samples}-sample window; event durations are preserved and baseline can appear on both sides. Median sampling interval = {dt_us:.3g} µs'+(f' ({fs/1000:.3g} kHz).' if np.isfinite(fs) else '.'))
+            if n_long:st.warning(f'{n_long} events are longer than the selected display window and are visually clipped in these family plots. Increase the window length if you want to see their full start-to-end trace. Cluster assignments are unchanged.')
+            if aligned.get('relative_dt_spread',0.)>.01:st.warning('Sampling intervals vary by more than 1% across these events. Data index remains valid as sample number; the shared millisecond axis should be interpreted cautiously.')
+            st.caption('The red representative is the pointwise cluster median, drawn only where at least 50% of that cluster has recorded samples. No vertical alignment marker is drawn.')
+
         family_view={'profiles':family_profiles,'centers':family_centers,'x':np.asarray(family_x,float),'x_label':family_x_label,'x_name':family_x_name,'event_start_x':family_event_start,'mode':family_mode}
 
         # Plot ranges never affect PCA or cluster membership. Auto mode already forces
@@ -704,8 +708,8 @@ elif step.startswith('5'):
             'clustering_fold_contrast':_auto_axis_limits(table['clustering_fold_contrast'].dropna().to_numpy()) if 'clustering_fold_contrast' in table else [0.,1.],
             'clustering_ecd_nA_ms':_auto_axis_limits(table['clustering_ecd_nA_ms'].dropna().to_numpy()) if 'clustering_ecd_nA_ms' in table else [0.,1.],
         }
-        with st.expander('Plot axis settings · lock ranges for direct comparison',expanded=False):
-            st.caption('Auto mode uses one common blockade axis for every cluster-family panel. Turn on manual/shared limits to reuse the exact same numerical axes across recordings. These controls change only the display and figure exports — never the clustering.')
+        with st.expander('Axis controls for cluster families, PCA and physical plots',expanded=True):
+            st.caption('Auto mode already gives every cluster-family panel the same blockade scale. Turn on manual/shared limits to set exact x/y ranges for the family plots and the other Step 5 figures. These controls change only display/export, never clustering.')
             manual_axes=st.checkbox('Use manual/shared numeric limits',value=bool(S.get('cluster_manual_axes',False)),key='cluster_manual_axes')
             dwell_log=st.checkbox('Use logarithmic dwell-time axis in blockade–dwell plots',value=bool(S.get('cluster_dwell_log',True)),key='cluster_dwell_log')
             if manual_axes:
@@ -740,8 +744,7 @@ elif step.startswith('5'):
                        'actual_x':actual_x,'actual_y':actual_y,'fold_x':fold_x,'fold_y':fold_y,
                        'occupancy_y':occupancy_y,'distribution_ranges':dist_ranges,
                        'family_mode':family_mode,'family_x_label':family_x_label,'family_event_start_x':family_event_start,
-                       'family_pre_samples':int(S.get('family_pre_samples',100)) if family_mode!=family_modes[2] else None,
-                       'family_post_samples':int(S.get('family_post_samples',100)) if family_mode!=family_modes[2] else None}
+                       'family_window_samples':int(S.get('family_window_samples',500)) if family_mode!=family_modes[2] else None}
         axis_key=json.dumps(axis_settings,sort_keys=True)
 
         st.subheader('A · Statistical clustering result from the original dataset features')
@@ -795,7 +798,7 @@ elif step.startswith('5'):
         if family_mode==family_modes[2]:
             st.caption('Grey curves are duration-normalised member profiles. The red curve is the pointwise median across all members. The 0–1 horizontal coordinate compares waveform shape but intentionally removes absolute dwell-time differences.')
         else:
-            st.caption('Grey curves are aligned real recorded traces. The red curve is the pointwise median across cluster members. Individual event durations are not stretched; shorter events therefore return to baseline earlier than longer events. The dotted vertical line marks the detected event start.')
+            st.caption('Grey curves are centred real recorded traces. The red curve is the pointwise median across cluster members. Individual event durations are not stretched, so starts and ends remain physically meaningful within the centred window.')
         st.write('**Median representative profiles overlaid**')
         show(profile_figure(family_view['profiles'],info['labels'],family_view['centers'],x=family_view['x'],x_label=family_view['x_label'],x_range=axis_settings['profile_x'],y_range=axis_settings['profile_y'],event_start_x=family_view['event_start_x']),'cluster_profiles')
 

@@ -1,6 +1,6 @@
-# DNA Event Lab 0.6 · Hart-style DNA event-family clustering
+# DNA Event Lab 0.6.1 · Hart-style DNA event-family clustering
 
-Version 0.6 redesigns Step 5 around the DNA conformation-clustering logic used in Hart et al. (NanoBoost), while retaining the app's explicit resolved-level QC. The primary clustering methods are now **PCA + Ward agglomerative** and **PCA + k-means**. Waveform k-means/DTW and the old automatic weighted-rank selector are no longer part of the Step 5 interface.
+Version 0.6.1 retains the v0.6 redesign and adds an explicit file-version compatibility check. Version 0.6 redesigns Step 5 around the DNA conformation-clustering logic used in Hart et al. (NanoBoost), while retaining the app's explicit resolved-level QC. The primary clustering methods are now **PCA + Ward agglomerative** and **PCA + k-means**. Waveform k-means/DTW and the old automatic weighted-rank selector are no longer part of the Step 5 interface.
 
 ## DNA feature model
 

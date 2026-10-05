@@ -7,7 +7,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.6.0'
+VERSION='0.6.1'
 @dataclass
 class Event:
     index:int

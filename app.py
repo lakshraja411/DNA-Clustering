@@ -3,6 +3,14 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import analysis as _analysis
+_REQUIRED_ANALYSIS = ['load_events','load_dataset','link_dataset','describe','refine','fit_metrics','cluster_features','feature_space_diagnostics','cluster_count_diagnostics','safe_settings']
+_MISSING_ANALYSIS = [name for name in _REQUIRED_ANALYSIS if not hasattr(_analysis,name)]
+if _MISSING_ANALYSIS:
+    st.error('DNA Event Lab file-version mismatch: app.py is v0.6+ but analysis.py is older or was not replaced.')
+    st.code('Missing from analysis.py: ' + ', '.join(_MISSING_ANALYSIS))
+    st.info('Replace app.py, analysis.py, physical.py, plots.py, workflow.py and requirements.txt together from the same release, then reboot the Streamlit app.')
+    st.stop()
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,cluster_features,feature_space_diagnostics,cluster_count_diagnostics,safe_settings
 from physical import level_features,PHYSICAL_DESCRIPTIONS
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
@@ -89,7 +97,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.6.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.6.1','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},
       'refinement_history':S.get('refinement_history',[]),'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))

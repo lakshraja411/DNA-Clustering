@@ -676,7 +676,7 @@ elif step.startswith('5'):
             family_centers,_=cluster_median_profiles(family_profiles,info['labels'],.5)
             if family_mode==family_modes[0]:
                 family_x=np.asarray(aligned['data_index'],float)
-                family_x_label=f'Data index'
+                family_x_label='Data index';family_x_name='data_index'
             else:
                 family_x=np.asarray(aligned['time_ms'],float)
                 family_x_label='Time relative to event midpoint (ms)';family_x_name='time_from_event_midpoint_ms'

@@ -51,17 +51,17 @@ assert at.session_state['refs']
 step(4);button('Prepare publication figures').click().run();assert not at.exception
 step(5);button('Run clustering').click().run();assert not at.exception,at.exception
 assert at.session_state['group']['meta']['clustering']['source']=='Selected fits'
-assert at.session_state['group']['meta']['clustering']['selection'].startswith('manual after Hart-style')
+assert at.session_state['group']['meta']['clustering']['selection'].startswith('manual after elbow')
 assert 2<=at.session_state['group']['meta']['clustering']['k']<=8
 assert at.session_state['group']['scan']['table']
-assert at.session_state['group']['meta']['clustering']['feature_set']=='DNA physical + morphology features'
+assert at.session_state['group']['meta']['clustering']['feature_set']=='five-feature DNA physical core'
 assert len(at.session_state['group']['sequences'])
 g=at.session_state['group'];assert len(g['table'])+len(g['excluded'])==len(small)
-assert any(h.value=='Main-style PCA cluster map' for h in at.subheader)
-button('Prepare Hart-style main + supplementary figure pack').click().run();assert not at.exception
+assert any(h.value=='A · Statistical clustering result' for h in at.subheader)
+button('Prepare main + supplementary DNA clustering figure pack').click().run();assert not at.exception
 with zipfile.ZipFile(io.BytesIO(at.session_state['hart_export'][1])) as z:
  assert 'main_pca_clusters.pdf' in z.namelist() and 'supp_scree.pdf' in z.namelist() and 'supp_elbow_silhouette.pdf' in z.namelist()
-button('Prepare cluster profile figures').click().run();assert not at.exception
+button('Prepare representative profile figures').click().run();assert not at.exception
 assert len(zipfile.ZipFile(io.BytesIO(at.session_state['cluster_figures'][1])).namelist())==5
 next(b for b in at.button if b.key=='next_bottom').click().run();assert not at.exception
 assert at.sidebar.radio[0].value.startswith('6')
@@ -85,4 +85,4 @@ step(1);assert at.session_state['recording_confirmed'];assert at.session_state['
 step(2);assert at.session_state['refs']
 button('Clear files and start over').click().run();assert not at.exception
 assert 'project' not in at.session_state and 'refs' not in at.session_state
-print('PASS: three-file matching; refined-fit preservation; DNA physical features; Hart-style elbow/silhouette diagnostics; PCA clustering; cluster subset alignment; Hart-style exports; guided UI and stale-group invalidation.')
+print('PASS: three-file matching; refined-fit preservation; five-feature DNA clustering core; robust scaling; elbow/silhouette diagnostics; physical interpretation plots; median waveform profiles; cluster subset alignment and exports.')

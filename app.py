@@ -3,21 +3,35 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+# Keep the application modules in lock-step. A stale helper file should give a clear
+# Streamlit message instead of failing during a long `from ... import ...` statement.
 import analysis as _analysis
-_REQUIRED_ANALYSIS = ['load_events','load_dataset','link_dataset','describe','refine','fit_metrics','cluster_features','feature_space_diagnostics','cluster_count_diagnostics','safe_settings']
-_MISSING_ANALYSIS = [name for name in _REQUIRED_ANALYSIS if not hasattr(_analysis,name)]
-if _MISSING_ANALYSIS:
-    st.error('DNA Event Lab file-version mismatch: app.py is v0.6+ but analysis.py is older or was not replaced.')
-    st.code('Missing from analysis.py: ' + ', '.join(_MISSING_ANALYSIS))
-    st.info('Replace app.py, analysis.py, physical.py, plots.py, workflow.py and requirements.txt together from the same release, then reboot the Streamlit app.')
+import physical as _physical
+import workflow as _workflow
+import plots as _plots
+
+_REQUIRED = {
+    'analysis.py': (_analysis, ['load_events','load_dataset','link_dataset','describe','refine','fit_metrics','cluster_features','feature_space_diagnostics','cluster_count_diagnostics','safe_settings']),
+    'physical.py': (_physical, ['level_features','PHYSICAL_DESCRIPTIONS']),
+    'workflow.py': (_workflow, ['active_events','signal_events','fitting_bytes','match_raw','bundle']),
+    'plots.py': (_plots, ['trace_figure','distribution_figures','profile_figure','LABELS','scientific','figure_archive','profile_archive','cluster_pca_figure','member_profile_figure_hart','representative_time_examples','time_example_figure','pca_scree_figure','k_diagnostics_figure','feature_correlation_figure','cluster_pca_3d_figure','dendrogram_figure','hart_style_archive','blockade_dwell_figure','population_fraction_figure','level_composition_figure','occupancy_figure','physical_feature_distributions_figure']),
+}
+_missing = {filename:[name for name in names if not hasattr(module,name)] for filename,(module,names) in _REQUIRED.items()}
+_missing = {filename:names for filename,names in _missing.items() if names}
+if _missing:
+    st.error('DNA Event Lab file-version mismatch: one or more helper files are older than this app.py.')
+    for filename,names in _missing.items():
+        st.code(f'{filename}: missing ' + ', '.join(names))
+    st.info('Replace app.py, analysis.py, physical.py, plots.py, workflow.py and requirements.txt together from the same release, then reboot the Streamlit app. Do not keep version-suffixed filenames in the repository; the deployed files must be named exactly app.py, analysis.py, physical.py, plots.py and workflow.py.')
     st.stop()
+
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,cluster_features,feature_space_diagnostics,cluster_count_diagnostics,safe_settings
 from physical import level_features,PHYSICAL_DESCRIPTIONS
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
 from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
-st.title('DNA Event Lab')
+st.title('DNA Event Lab · v0.6.3')
 st.caption('Load → inspect → refine → plot → cluster → save')
 st.sidebar.title('Your analysis')
 S=st.session_state

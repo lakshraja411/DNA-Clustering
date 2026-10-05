@@ -1,3 +1,13 @@
+# DNA Event Lab v0.6.3
+
+**Deployment:** replace the repository files together and keep the exact names `app.py`, `analysis.py`, `physical.py`, `plots.py`, `workflow.py`, and `requirements.txt`. Reboot the Streamlit app after the commit. The app now reports the exact stale helper file/function if versions are mixed.
+
+# DNA Event Lab 0.6.2 — physics-led DNA clustering
+
+Step 5 now uses a deliberately small primary clustering space: log10 dwell time, duration-weighted resolved blockade, deepest sustained blockade, duration-weighted resolved-level SD, and blockade temporal centroid. Features are median/IQR scaled with `RobustScaler`, then PCA is used before either Ward agglomerative clustering or k-means. Rich quantities such as ECD, resolved level count, deepest-state occupancy/position, blockade range and transition direction are retained for interpretation rather than all being fed into PCA.
+
+The main physical outputs are: PC1–PC2 without convex-hull shading; dwell time versus duration-weighted blockade; cluster-wise distributions of dwell, weighted blockade, deepest blockade and ECD; resolved-level composition; deepest-state occupancy; population fractions; member waveform panels using faint real traces plus a bold pointwise median representative with **no percentile band**; and real representative events on the original time axis. Correlation, scree, elbow/silhouette, loadings, optional PC3 and Ward dendrogram remain supplementary diagnostics.
+
 # DNA Event Lab 0.6.1 · Hart-style DNA event-family clustering
 
 Version 0.6.1 retains the v0.6 redesign and adds an explicit file-version compatibility check. Version 0.6 redesigns Step 5 around the DNA conformation-clustering logic used in Hart et al. (NanoBoost), while retaining the app's explicit resolved-level QC. The primary clustering methods are now **PCA + Ward agglomerative** and **PCA + k-means**. Waveform k-means/DTW and the old automatic weighted-rank selector are no longer part of the Step 5 interface.
@@ -22,23 +32,23 @@ For each physically eligible event the app can cluster a deliberately interpreta
 
 When a condition-specific single-file reference `ΔI0` is supplied, the main amplitude descriptors are available as ratios to `ΔI0`. The app does not infer `ΔI0` or assign fold/strand identities. ECD is always integrated from the measured trace; the resolved-level amplitude descriptors use the selected fit or measured samples within selected-fit boundaries according to the Step 5 source setting.
 
-Constant descriptors and near-duplicates (`|r| >= 0.98`) are removed before PCA. The retained features are z-score standardised.
+Constant descriptors and near-duplicates (`|r| >= 0.98`) are removed before PCA. The retained primary features are median/IQR scaled with `RobustScaler`.
 
 ## Hart-style analysis sequence and plots
 
 Step 5 now follows this sequence:
 
-`resolved levels → DNA feature matrix → feature-correlation QC → z-score scaling → PCA scree plot → choose PCA dimension → elbow + silhouette scan over k → choose k → Ward agglomerative or k-means → physical/profile interpretation`
+`resolved levels → five-feature DNA core → feature-correlation QC → median/IQR scaling → PCA scree plot → choose PCA dimension → elbow + silhouette scan over k → choose k → Ward agglomerative or k-means → physical/profile interpretation`
 
 The interface and export pack provide analogues of the main/supplementary clustering analyses:
 
 - feature correlation heatmap;
 - PCA scree + cumulative-variance plot;
 - combined elbow/within-cluster-dispersion + silhouette plot;
-- PC1–PC2 cluster map with convex-hull visual guides;
+- PC1–PC2 cluster map without convex-hull shading;
 - optional 3-PC view;
 - Ward dendrogram for agglomerative clustering;
-- per-cluster member waveform panels with a 10th–90th percentile envelope and mean representative;
+- per-cluster member waveform panels with faint real traces and a pointwise median representative;
 - overlay of representative profiles;
 - one real representative event per cluster in actual milliseconds;
 - a Hart-style cluster feature/population table using medians in original physical units;

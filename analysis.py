@@ -1,4 +1,5 @@
 """Nanopore Shape Lab 0.4: explicit signal processing and lossless event subsets."""
+RELEASE_VERSION='0.6.3'
 from dataclasses import dataclass
 import io, json, re, zipfile
 import numpy as np

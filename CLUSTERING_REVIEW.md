@@ -1,3 +1,3 @@
-# v0.8.3 clustering note
+# v0.9.0 clustering note
 
-No clustering logic changed from v0.8.2. The event-family display now uses a centred fixed sample/time window by default, removes the vertical alignment marker, and exposes x-axis mode and manual/shared axis limits prominently.
+The primary dataset-feature clustering is unchanged from v0.8.3. New functionality only packages clustered recordings and compares user-matched event families across LiCl, NaCl, KCl, RbCl and CsCl. Cluster IDs are never assumed homologous across salts.

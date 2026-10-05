@@ -1,21 +1,35 @@
-# DNA Event Lab v0.8.3
+# DNA Event Lab v0.9.0 — five-salt comparison
 
-## Centred Hart-style event-family display
+This release keeps the v0.8.x dataset-feature clustering unchanged and adds a cross-salt comparison workflow.
 
-This release keeps the v0.8.2 dataset-feature clustering unchanged. The update is display/export only.
+## Existing clustering
 
-Step 5 now puts the cluster-family controls directly above the family plots so they are easy to find. The horizontal axis can be switched between:
+Step 5 still uses the original NanoSense dataset feature matrix: selected `X` columns → MinMax scaling to [-1,1] → PCA → Ward agglomerative or k-means. Resolved-level descriptors remain interpretation-only.
 
-1. **Data index (sample number)** — default. Each detected event midpoint is placed at the centre of a fixed sample window. The original samples are not stretched, so dwell-time differences remain visible while baseline can appear before and after the event.
-2. **Time relative to event midpoint (ms)** — the same centred real-sample traces converted to milliseconds using the median sampling interval.
-3. **Normalized event position (0 = start, 1 = end)** — optional shape-only view; absolute dwell time is intentionally removed.
+## New Step 7 · Compare salts
 
-The centred window length is user-adjustable. If an event is longer than the selected window, the app warns that it is visually clipped; cluster assignments are unaffected.
+After clustering each recording, Step 6 can export a compact **salt-comparison package** containing:
 
-The grey dashed/vertical alignment marker has been removed from cluster-family panels, representative overlays, and exports.
+- event-to-cluster assignments,
+- centered real-sample median profiles for every cluster,
+- cluster counts/populations,
+- median and IQR dwell times,
+- median and IQR mean blockade,
+- clustering/profile metadata.
 
-The axis-control section is now expanded by default. Auto mode keeps a common blockade axis across every cluster-family panel; manual/shared mode lets the user set exact family x/y limits and matching axes for PCA and physical plots.
+Upload the LiCl, NaCl, KCl, RbCl and CsCl packages in Step 7. Cluster IDs are recording-specific, so the interface explicitly asks you to map each Cluster ID to a common Family A/B/C… label. The default suggestion follows the shallow-to-deep cluster ordering, but the user must confirm the physical correspondence.
 
-Cluster representatives remain pointwise medians and are drawn only where at least 50% of cluster members have recorded samples. No percentile band is drawn.
+Step 7 then creates:
 
-Clustering remains: selected original `dataset.npz` columns → MinMax scaling to `[-1,1]` → PCA → Ward agglomerative or k-means. None of the display controls change PCA or cluster membership.
+1. matched-family median waveforms across salts,
+2. 100% stacked family-population bars,
+3. family-resolved median dwell time with event-level IQR,
+4. family-resolved median blockade with event-level IQR,
+5. optional blockade normalised to a user-selected reference family within each salt,
+6. a publication export pack with PDF/SVG/600 dpi PNG plus CSV/JSON.
+
+PCA is **not pooled across salts** in this workflow. Separately fitted PCs are treated as within-recording diagnostics only.
+
+## Important statistical caution
+
+The IQRs in Step 7 describe the spread of events within a recording; they are not replicate-level confidence intervals. If multiple independent pores/recordings are available per salt, inferential statistics should use those independent replicates rather than treating every translocation as an independent experimental replicate.

@@ -13,12 +13,12 @@ import plots as _plots
 _REQUIRED = {
     'analysis.py': (_analysis, ['load_events','load_dataset','link_dataset','describe','refine','fit_metrics','cluster_features','feature_space_diagnostics','cluster_count_diagnostics','safe_settings','DATASET_FEATURE_NAMES','DATASET_FEATURE_DESCRIPTIONS','dataset_feature_name','dataset_feature_label','aligned_event_profiles','cluster_median_profiles']),
     'physical.py': (_physical, ['level_features','PHYSICAL_DESCRIPTIONS']),
-    'workflow.py': (_workflow, ['active_events','signal_events','fitting_bytes','match_raw','bundle']),
-    'plots.py': (_plots, ['trace_figure','distribution_figures','profile_figure','LABELS','scientific','figure_archive','profile_archive','cluster_pca_figure','member_profile_figure_hart','representative_time_examples','time_example_figure','pca_scree_figure','k_diagnostics_figure','feature_correlation_figure','cluster_pca_3d_figure','dendrogram_figure','hart_style_archive','blockade_dwell_figure','population_fraction_figure','level_composition_figure','occupancy_figure','physical_feature_distributions_figure','fold_state_figure']),
+    'workflow.py': (_workflow, ['active_events','signal_events','fitting_bytes','match_raw','bundle','comparison_package']),
+    'plots.py': (_plots, ['trace_figure','distribution_figures','profile_figure','LABELS','scientific','figure_archive','profile_archive','cluster_pca_figure','member_profile_figure_hart','representative_time_examples','time_example_figure','pca_scree_figure','k_diagnostics_figure','feature_correlation_figure','cluster_pca_3d_figure','dendrogram_figure','hart_style_archive','blockade_dwell_figure','population_fraction_figure','level_composition_figure','occupancy_figure','physical_feature_distributions_figure','fold_state_figure','comparison_condition_preview_figure','cross_salt_family_profiles_figure','cross_salt_population_figure','cross_salt_metric_figure','cross_salt_comparison_archive']),
 }
 _missing = {filename:[name for name in names if not hasattr(module,name)] for filename,(module,names) in _REQUIRED.items()}
 _missing = {filename:names for filename,names in _missing.items() if names}
-_EXPECTED_RELEASE='0.8.3'
+_EXPECTED_RELEASE='0.9.0'
 _version_mismatch={filename:getattr(module,'RELEASE_VERSION',None) for filename,(module,_) in _REQUIRED.items() if getattr(module,'RELEASE_VERSION',None)!=_EXPECTED_RELEASE}
 if _missing or _version_mismatch:
     st.error('DNA Event Lab file-version mismatch: helper files are not all from release '+_EXPECTED_RELEASE+'.')
@@ -31,15 +31,15 @@ if _missing or _version_mismatch:
 
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,cluster_features,feature_space_diagnostics,cluster_count_diagnostics,safe_settings,DATASET_FEATURE_NAMES,DATASET_FEATURE_DESCRIPTIONS,dataset_feature_name,dataset_feature_label,aligned_event_profiles,cluster_median_profiles
 from physical import level_features,PHYSICAL_DESCRIPTIONS
-from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
-from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure,fold_state_figure
+from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle,comparison_package
+from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure,fold_state_figure,comparison_condition_preview_figure,cross_salt_family_profiles_figure,cross_salt_population_figure,cross_salt_metric_figure,cross_salt_comparison_archive
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
-st.title('DNA Event Lab · v0.8.3')
-st.caption('Load → inspect → refine → plot → cluster → save')
+st.title('DNA Event Lab · v0.9.0')
+st.caption('Load → inspect → refine → plot → cluster → save → compare salts')
 st.sidebar.title('Your analysis')
 S=st.session_state
-STEPS=['1 · Load files','2 · Inspect events','3 · Refine and save fits','4 · Current–duration plots','5 · Cluster events','6 · Save clusters']
+STEPS=['1 · Load files','2 · Inspect events','3 · Refine and save fits','4 · Current–duration plots','5 · Cluster events','6 · Save clusters','7 · Compare salts']
 step=st.sidebar.radio('Step',STEPS,key='workflow_step')
 
 def move_step(delta):
@@ -96,6 +96,49 @@ def _axis_pair(label,key,default):
         return list(default)
     return [float(lo),float(hi)]
 
+
+
+def _read_comparison_package(uploaded):
+    """Read one compact package exported from Step 6."""
+    blob=uploaded.getvalue() if hasattr(uploaded,'getvalue') else uploaded
+    with zipfile.ZipFile(io.BytesIO(blob),'r') as z:
+        names=set(z.namelist());need={'cluster_assignments.csv','cluster_profiles.csv','cluster_summary.csv','comparison_meta.json'}
+        missing=sorted(need-names)
+        if missing:raise ValueError('Not a DNA Event Lab comparison package; missing: '+', '.join(missing))
+        assignments=pd.read_csv(z.open('cluster_assignments.csv'))
+        profiles=pd.read_csv(z.open('cluster_profiles.csv'))
+        summary=pd.read_csv(z.open('cluster_summary.csv'))
+        meta=json.loads(z.read('comparison_meta.json').decode('utf-8'))
+    for frame,name in [(assignments,'assignments'),(profiles,'profiles'),(summary,'summary')]:
+        if 'cluster' not in frame:raise ValueError(f'{name} table has no cluster column.')
+        frame['cluster']=frame['cluster'].astype(int)
+    return {'assignments':assignments,'profiles':profiles,'summary':summary,'meta':meta,'name':getattr(uploaded,'name','package.zip')}
+
+
+def _cross_salt_stats(packages,mapping,reference_family=None):
+    rows=[]
+    blockade_candidates=['clustering_measured_mean_blockade_nA','mean_blockade_nA']
+    for salt,pkg in packages.items():
+        table=pkg['assignments'];total=max(1,len(table));bcol=next((c for c in blockade_candidates if c in table),None)
+        for cluster in sorted(table.cluster.astype(int).unique()):
+            fam=mapping.get(salt,{}).get(int(cluster),'Unmapped')
+            sub=table[table.cluster.astype(int)==int(cluster)]
+            d=sub['duration_ms'].dropna().to_numpy(float) if 'duration_ms' in sub else np.array([])
+            b=sub[bcol].dropna().to_numpy(float) if bcol else np.array([])
+            row={'salt':salt,'cluster':int(cluster),'family':fam,'n':int(len(sub)),'population_pct':100.*len(sub)/total}
+            row.update(median_dwell_ms=float(np.median(d)) if len(d) else np.nan,
+                       q1_dwell_ms=float(np.quantile(d,.25)) if len(d) else np.nan,
+                       q3_dwell_ms=float(np.quantile(d,.75)) if len(d) else np.nan,
+                       median_blockade_nA=float(np.median(b)) if len(b) else np.nan,
+                       q1_blockade_nA=float(np.quantile(b,.25)) if len(b) else np.nan,
+                       q3_blockade_nA=float(np.quantile(b,.75)) if len(b) else np.nan)
+            rows.append(row)
+    stats=pd.DataFrame(rows)
+    if reference_family and len(stats):
+        refs=stats[stats.family==reference_family].set_index('salt')['median_blockade_nA'].to_dict()
+        stats['relative_blockade']=[(r.median_blockade_nA/refs.get(r.salt,np.nan)) if np.isfinite(refs.get(r.salt,np.nan)) and refs.get(r.salt,np.nan)!=0 else np.nan for r in stats.itertuples()]
+    return stats
+
 def next_step(label):navigation('bottom')
 
 if step.startswith('1'):
@@ -129,6 +172,110 @@ if step.startswith('1'):
         S.recording_confirmed=st.checkbox('I checked that these three files belong to the same recording.',value=S.get('recording_confirmed',False),key='confirmation_widget')
         next_step('2 · Inspect events')
     st.stop()
+
+if step.startswith('7'):
+    st.header('7 · Compare salts')
+    st.write('Compare already-clustered LiCl, NaCl, KCl, RbCl and CsCl recordings without pooling their PCAs. Upload one compact comparison package from Step 6 for each condition, map each recording-specific Cluster ID to a common Family A/B/C… label, then compare family morphology, population and kinetics.')
+    st.info('Important: Cluster 0 in one salt is not assumed to equal Cluster 0 in another. The family mapping below is an explicit physical correspondence that you confirm from the profiles and summary statistics.')
+    salts=['LiCl','NaCl','KCl','RbCl','CsCl']
+    packages={};errors=[]
+    cols=st.columns(5)
+    for i,salt in enumerate(salts):
+        up=cols[i].file_uploader(salt+' comparison package',type='zip',key='salt_compare_'+salt)
+        if up is not None:
+            try:packages[salt]=_read_comparison_package(up)
+            except Exception as ex:errors.append(f'{salt}: {ex}')
+    for err in errors:st.error(err)
+    if not packages:
+        st.caption('To make one: cluster a recording in Step 5, go to Step 6, and use “Prepare salt-comparison package”. Repeat once for each salt.')
+        navigation('bottom');st.stop()
+    if len(packages)<5:st.warning(f'{len(packages)} of 5 salts loaded. You can preview a partial comparison now; add the remaining packages for the final figure.')
+
+    pkg_rows=[]
+    for salt,pkg in packages.items():
+        m=pkg['meta'];pkg_rows.append({'Salt':salt,'Events':len(pkg['assignments']),'Clusters':len(pkg['summary']),'Sampling rate (kHz)':float(m.get('sampling_rate_hz',np.nan))/1000.,'Profile source':m.get('profile_source','')})
+    st.dataframe(pd.DataFrame(pkg_rows).round(3),hide_index=True,width='stretch')
+
+    st.subheader('1 · Match recording-specific clusters to common DNA event families')
+    st.caption('The default suggestion follows the app ordering (shallowest median profile → Cluster 0 → Family A, then B, C…). Change any assignment that does not look physically homologous across salts. Use “Unmapped” rather than forcing a doubtful correspondence.')
+    family_options=['Unmapped']+[chr(65+i) for i in range(10)]
+    mapping={};duplicate_problem=False
+    for salt in salts:
+        if salt not in packages:continue
+        pkg=packages[salt];clusters=sorted(pkg['summary'].cluster.astype(int).unique().tolist())
+        with st.expander(f'{salt} · inspect and map {len(clusters)} clusters',expanded=(salt==next(iter(packages)))):
+            show(comparison_condition_preview_figure(pkg['profiles'],salt,'time_ms'),'compare_preview_'+salt)
+            qcols=st.columns(min(4,max(1,len(clusters))))
+            mapping[salt]={}
+            for j,cl in enumerate(clusters):
+                default=chr(65+j) if j<10 else 'Unmapped'
+                key=f'family_map_{salt}_{cl}'
+                current=S.get(key,default)
+                if current not in family_options:current=default
+                fam=qcols[j%len(qcols)].selectbox(f'Cluster {cl}',family_options,index=family_options.index(current),key=key)
+                mapping[salt][int(cl)]=fam
+            chosen=[v for v in mapping[salt].values() if v!='Unmapped']
+            if len(chosen)!=len(set(chosen)):
+                duplicate_problem=True;st.error('Two clusters in this recording are mapped to the same family. Use unique family labels, or leave one Unmapped.')
+    if duplicate_problem:
+        st.warning('Resolve duplicate family assignments before generating the cross-salt figures.')
+        navigation('bottom');st.stop()
+
+    mapped_families=sorted({v for m in mapping.values() for v in m.values() if v!='Unmapped'})
+    if not mapped_families:
+        st.info('Map at least one cluster to a family label.');navigation('bottom');st.stop()
+
+    st.subheader('2 · Cross-salt comparison settings')
+    c1,c2,c3=st.columns(3)
+    compare_mode=c1.radio('Family-profile horizontal axis',['Time relative to event midpoint (ms)','Data index'],index=0,key='salt_compare_axis')
+    x_mode='time_ms' if compare_mode.startswith('Time') else 'data_index'
+    reference_family=c2.selectbox('Reference family for optional relative blockade',['None']+mapped_families,index=0,key='salt_reference_family')
+    manual_compare=c3.checkbox('Use fixed shared profile axes',value=True,key='salt_fixed_axes')
+    all_x=[];all_y=[]
+    for pkg in packages.values():
+        all_x.append(pkg['profiles'][x_mode].to_numpy(float));all_y.append(pkg['profiles']['median_blockade_nA'].to_numpy(float))
+    x_auto=_auto_axis_limits(np.concatenate(all_x));y_auto=_auto_axis_limits(np.concatenate(all_y))
+    if manual_compare:
+        a,b=st.columns(2);x_range=_axis_pair('Family profile '+('time (ms)' if x_mode=='time_ms' else 'data index'),'salt_profile_x',x_auto);y_range=_axis_pair('Family profile blockade (nA)','salt_profile_y',y_auto)
+    else:x_range=x_auto;y_range=y_auto
+
+    stats=_cross_salt_stats(packages,mapping,None if reference_family=='None' else reference_family)
+    st.subheader('3 · Matched family summary')
+    summary_cols=['salt','cluster','family','n','population_pct','median_dwell_ms','q1_dwell_ms','q3_dwell_ms','median_blockade_nA','q1_blockade_nA','q3_blockade_nA']
+    if 'relative_blockade' in stats:summary_cols.append('relative_blockade')
+    st.dataframe(stats[summary_cols].round(4),hide_index=True,width='stretch')
+    st.download_button('Download cross-salt family summary CSV',stats.to_csv(index=False),'cross_salt_family_summary.csv','text/csv')
+    st.download_button('Download family mapping JSON',json.dumps({s:{str(k):v for k,v in m.items()} for s,m in mapping.items()},indent=2),'family_mapping.json','application/json')
+
+    st.subheader('4 · Family morphology across electrolytes')
+    st.caption('Each panel follows one user-matched family across salts. Lines are the centered pointwise median waveforms from the independently clustered recordings; the same numerical x/y limits are used in every family panel.')
+    show(cross_salt_family_profiles_figure(packages,mapping,x_mode,x_range,y_range),'cross_salt_profiles')
+
+    st.subheader('5 · Does salt change the probability of each event family?')
+    show(cross_salt_population_figure(stats),'cross_salt_populations')
+    if (stats.family=='Unmapped').any():st.caption('Grey “Unmapped” fraction is retained so the stacked bars still represent all clustered events rather than silently renormalising the selected families.')
+
+    st.subheader('6 · Does salt change the kinetics of the same family?')
+    st.caption('Points are event-level medians within each mapped family; error bars are the event-level interquartile range (Q1–Q3). These are descriptive within-recording spreads, not replicate-level confidence intervals.')
+    show(cross_salt_metric_figure(stats,'median_dwell_ms','q1_dwell_ms','q3_dwell_ms','Family-resolved dwell time across salts','Median dwell time (ms)',False),'cross_salt_dwell')
+    show(cross_salt_metric_figure(stats,'median_blockade_nA','q1_blockade_nA','q3_blockade_nA','Family-resolved blockade across salts','Median mean blockade (nA)',False),'cross_salt_blockade')
+    if reference_family!='None' and 'relative_blockade' in stats:
+        rel=stats[stats.family!='Unmapped'].copy();rel['q1_relative']=np.nan;rel['q3_relative']=np.nan
+        # Reference-normalised medians are shown without event-level error bars because
+        # the denominator is itself estimated from the reference family in each salt.
+        f=px.line(rel,x='salt',y='relative_blockade',color='family',markers=True,category_orders={'salt':salts},labels={'salt':'Electrolyte','relative_blockade':f'Median blockade / Family {reference_family} median','family':'Family'})
+        f.add_hline(y=1,line_dash='dot',line_color='gray');f.update_layout(height=400,title=f'Blockade relative to Family {reference_family} within each salt')
+        show(f,'cross_salt_relative_blockade')
+
+    st.subheader('7 · Publication export')
+    st.caption('The export contains the matched-family profile grid, 100% population bars, family-resolved dwell/blockade trends, the family-summary CSV and the mapping JSON. Profile panels use the shared axes chosen above.')
+    export_signature=(tuple(sorted((s,pkg['name']) for s,pkg in packages.items())),json.dumps(mapping,sort_keys=True),x_mode,tuple(x_range),tuple(y_range),reference_family)
+    if st.button('Prepare cross-salt publication figure pack',type='primary'):
+        S.cross_salt_export=(export_signature,cross_salt_comparison_archive(packages,mapping,stats,x_mode,x_range,y_range,None if reference_family=='None' else reference_family))
+    if S.get('cross_salt_export') and S.cross_salt_export[0]==export_signature:
+        st.download_button('Save cross-salt figure pack',S.cross_salt_export[1],'cross_salt_DNA_families.zip','application/zip')
+    navigation('bottom');st.stop()
+
 if 'project' not in S:st.info('Start at 1 · Load files.');st.stop()
 if not S.get('recording_confirmed'):st.info('Confirm the recording match in 1 · Load files before continuing.');st.stop()
 p=S.project;events=p['events'];refs=S.setdefault('refs',{});active=active_events(events,refs)
@@ -137,7 +284,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.8.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.9.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},
       'refinement_history':S.get('refinement_history',[]),'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
@@ -676,7 +823,7 @@ elif step.startswith('5'):
             family_centers,_=cluster_median_profiles(family_profiles,info['labels'],.5)
             if family_mode==family_modes[0]:
                 family_x=np.asarray(aligned['data_index'],float)
-                family_x_label='Data index';family_x_name='data_index'
+                family_x_label=f'Data index (sample number; event midpoint = {aligned["event_midpoint_index"]})';family_x_name='data_index'
             else:
                 family_x=np.asarray(aligned['time_ms'],float)
                 family_x_label='Time relative to event midpoint (ms)';family_x_name='time_from_event_midpoint_ms'
@@ -871,5 +1018,19 @@ elif step.startswith('6'):
     if S.get('prepared') and S.prepared[0]==key:st.download_button('Save cluster files ZIP',S.prepared[1],'cluster_files.zip','application/zip')
     st.write('Each cluster contains its selected eventfitting file, matched eventdata and original dataset subset, event table and analysis settings. The all-clusters download also records dataset-feature exclusions and resolved-level interpretation data when available. Uploaded fits remain preserved inside the fitting export.')
     st.caption('Dataset rows are preserved as uploaded; they are not recalculated after refinement. Updated clustering measurements are in the CSV. Files reload in this app; compatibility with NanoSense re-import is not established.')
+
+    st.divider()
+    st.subheader('Prepare this recording for the five-salt comparison')
+    st.write('This compact package keeps the cluster assignments, family-level centered median waveforms and summary statistics needed by Step 7. It does not pool or re-run PCA.')
+    c1,c2=st.columns(2)
+    condition_label=c1.text_input('Condition label (optional)',value=S.get('comparison_condition_label',''),key='comparison_condition_label',placeholder='e.g. LiCl · λ-DNA · 400 mV')
+    compare_window=int(c2.number_input('Centered profile window saved in package (samples)',min_value=100,max_value=10000,value=int(S.get('family_window_samples',850)),step=50,key='comparison_package_window'))
+    comparison_key=(str(g['signature']),condition_label,compare_window)
+    if st.button('Prepare salt-comparison package'):
+        profile_source=g['meta']['clustering'].get('profile_source','Measured trace')
+        S.comparison_package=(comparison_key,comparison_package(active,table,profile_source,g['meta'],condition_label,compare_window))
+    if S.get('comparison_package') and S.comparison_package[0]==comparison_key:
+        st.download_button('Save comparison package ZIP',S.comparison_package[1],'DNA_Event_Lab_comparison_package.zip','application/zip')
+    st.caption('Repeat this export after clustering LiCl, NaCl, KCl, RbCl and CsCl. Then upload the five packages in Step 7 · Compare salts.')
 
     navigation("bottom")

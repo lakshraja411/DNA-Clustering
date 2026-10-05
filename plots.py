@@ -1,4 +1,4 @@
-RELEASE_VERSION='0.8.3'
+RELEASE_VERSION='0.9.0'
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -586,4 +586,166 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         z.writestr('representative_profiles.csv',pd.DataFrame([{'cluster':j,family_x_name:float(t),'blockade_nA':float(v)} for j,c in enumerate(centers) for t,v in zip(family_x,c)]).to_csv(index=False))
         z.writestr('README.txt',('Hart-style DNA clustering export generated from the current recording. Main-style outputs: PCA cluster map without convex-hull fills, per-cluster member traces with median representatives, and representative overlay. The event-family horizontal coordinate is '+family_x_label+'. Data-index/time modes use real recorded samples centred on each detected event midpoint and do not stretch individual event durations. Supplementary-style outputs: scree plot, elbow-silhouette scan, optional 3-PC view, and Ward dendrogram for agglomerative clustering. These are analysis analogues, not reproductions of published artwork. Cluster labels denote signal families only; physical/topological assignments require independent interpretation.'))
         z.writestr('settings.json',json.dumps({'source':source,'method':method,'n_components':info.get('n_components'),'silhouette':info.get('silhouette'),'calinski_harabasz':info.get('calinski_harabasz'),'davies_bouldin':info.get('davies_bouldin'),'axis_settings':axis_settings},indent=2))
+    return out.getvalue()
+
+SALT_ORDER=['LiCl','NaCl','KCl','RbCl','CsCl']
+SALT_COLORS={'LiCl':'#0072B2','NaCl':'#D55E00','KCl':'#009E73','RbCl':'#CC79A7','CsCl':'#E69F00'}
+FAMILY_COLORS={chr(65+i):PALETTE[i%len(PALETTE)] for i in range(12)}
+
+
+def comparison_condition_preview_figure(profiles,condition,x_mode='time_ms',x_range=None,y_range=None):
+    """Overlay all algorithmic cluster medians from one comparison package."""
+    import pandas as pd
+    d=profiles.copy()
+    xcol='time_ms' if x_mode=='time_ms' else 'data_index'
+    xlabel='Time relative to event midpoint (ms)' if x_mode=='time_ms' else 'Data index'
+    f=go.Figure()
+    for j,cl in enumerate(sorted(pd.unique(d['cluster']).tolist())):
+        q=d[d.cluster==cl]
+        n=int(q['cluster_n'].iloc[0]) if len(q) and 'cluster_n' in q else 0
+        f.add_trace(go.Scatter(x=q[xcol],y=q['median_blockade_nA'],mode='lines',name=f'Cluster {int(cl)} (n={n})',line=dict(width=2,color=PALETTE[j%len(PALETTE)]),connectgaps=False))
+    f.update_layout(title=str(condition),xaxis_title=xlabel,yaxis_title='Median blockade (nA)',height=350)
+    if x_range is not None:f.update_xaxes(range=list(x_range))
+    if y_range is not None:f.update_yaxes(range=list(y_range))
+    return f
+
+
+def cross_salt_family_profiles_figure(packages,mapping,x_mode='time_ms',x_range=None,y_range=None):
+    """One subplot per matched family; salt identity is encoded by line colour."""
+    from plotly.subplots import make_subplots
+    families=sorted({fam for salt,m in mapping.items() for fam in m.values() if fam and fam!='Unmapped'})
+    if not families:return go.Figure()
+    cols=2;rows=int(np.ceil(len(families)/cols))
+    f=make_subplots(rows=rows,cols=cols,subplot_titles=[f'Family {fam}' for fam in families],shared_xaxes=False,shared_yaxes=True)
+    xcol='time_ms' if x_mode=='time_ms' else 'data_index'
+    xlabel='Time relative to event midpoint (ms)' if x_mode=='time_ms' else 'Data index'
+    salt_order=[s for s in SALT_ORDER if s in packages]+[s for s in packages if s not in SALT_ORDER]
+    for idx,fam in enumerate(families):
+        r=idx//cols+1;c=idx%cols+1
+        for salt in salt_order:
+            inv={v:int(k) for k,v in mapping.get(salt,{}).items() if v!='Unmapped'}
+            if fam not in inv:continue
+            cl=inv[fam];d=packages[salt]['profiles'];q=d[d.cluster.astype(int)==cl]
+            if not len(q):continue
+            f.add_trace(go.Scatter(x=q[xcol],y=q['median_blockade_nA'],mode='lines',name=salt,legendgroup=salt,showlegend=(idx==0),
+                                   line=dict(color=SALT_COLORS.get(salt,PALETTE[salt_order.index(salt)%len(PALETTE)]),width=2.2),connectgaps=False),row=r,col=c)
+        f.update_xaxes(title_text=xlabel,row=r,col=c)
+        if x_range is not None:f.update_xaxes(range=list(x_range),row=r,col=c)
+        if y_range is not None:f.update_yaxes(range=list(y_range),row=r,col=c)
+        f.update_yaxes(title_text='Median blockade (nA)' if c==1 else None,row=r,col=c)
+    f.update_layout(height=max(350,320*rows),title='Matched DNA event families across salts')
+    return f
+
+
+def cross_salt_population_figure(stats):
+    """100% stacked family fractions across salts."""
+    import pandas as pd
+    d=stats.copy();salts=[s for s in SALT_ORDER if s in set(d['salt'])]+[s for s in pd.unique(d['salt']) if s not in SALT_ORDER]
+    fams=sorted([x for x in pd.unique(d['family']) if x!='Unmapped'])
+    if 'Unmapped' in set(d['family']):fams=fams+['Unmapped']
+    f=go.Figure()
+    for j,fam in enumerate(fams):
+        vals=[]
+        for salt in salts:
+            q=d[(d.salt==salt)&(d.family==fam)]
+            vals.append(float(q['population_pct'].sum()) if len(q) else 0.)
+        color='#999999' if fam=='Unmapped' else FAMILY_COLORS.get(fam,PALETTE[j%len(PALETTE)])
+        f.add_trace(go.Bar(x=salts,y=vals,name=('Unmapped' if fam=='Unmapped' else f'Family {fam}'),marker_color=color))
+    f.update_layout(barmode='stack',xaxis_title='Electrolyte',yaxis_title='Population (%)',yaxis_range=[0,100],height=430,title='Event-family populations across salts')
+    return f
+
+
+def cross_salt_metric_figure(stats,metric='median_dwell_ms',q1='q1_dwell_ms',q3='q3_dwell_ms',title='Family-resolved dwell time',y_label='Median dwell time (ms)',log_y=False):
+    """Family-resolved salt trend with asymmetric IQR error bars."""
+    import pandas as pd
+    d=stats.copy();salts=[s for s in SALT_ORDER if s in set(d['salt'])]+[s for s in pd.unique(d['salt']) if s not in SALT_ORDER]
+    fams=sorted([x for x in pd.unique(d['family']) if x!='Unmapped'])
+    f=go.Figure()
+    for j,fam in enumerate(fams):
+        ys=[];minus=[];plus=[];xs=[]
+        for salt in salts:
+            q=d[(d.salt==salt)&(d.family==fam)]
+            if not len(q):continue
+            row=q.iloc[0];v=float(row[metric]);lo=float(row[q1]);hi=float(row[q3])
+            if not np.isfinite(v):continue
+            xs.append(salt);ys.append(v);minus.append(max(0.,v-lo) if np.isfinite(lo) else 0.);plus.append(max(0.,hi-v) if np.isfinite(hi) else 0.)
+        if xs:
+            f.add_trace(go.Scatter(x=xs,y=ys,mode='lines+markers',name=f'Family {fam}',line=dict(color=FAMILY_COLORS.get(fam,PALETTE[j%len(PALETTE)]),width=2),
+                                   marker=dict(size=8),error_y=dict(type='data',symmetric=False,array=plus,arrayminus=minus,thickness=1,width=3)))
+    f.update_layout(title=title,xaxis_title='Electrolyte',yaxis_title=y_label,height=430)
+    if log_y:f.update_yaxes(type='log')
+    return f
+
+
+def cross_salt_comparison_archive(packages,mapping,stats,x_mode='time_ms',x_range=None,y_range=None,reference_family=None):
+    """Publication export for the Compare salts page: profiles, populations and family-resolved trends."""
+    import io,json,zipfile
+    import pandas as pd
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    out=io.BytesIO();stats=stats.copy()
+    families=sorted([f for f in pd.unique(stats.family) if f!='Unmapped'])
+    salts=[s for s in SALT_ORDER if s in packages]+[s for s in packages if s not in SALT_ORDER]
+    xcol='time_ms' if x_mode=='time_ms' else 'data_index';xlabel='Time relative to event midpoint (ms)' if x_mode=='time_ms' else 'Data index'
+    rc={'font.family':'sans-serif','font.size':9,'axes.linewidth':.8,'svg.fonttype':'none','pdf.fonttype':42,'xtick.direction':'out','ytick.direction':'out'}
+    with plt.rc_context(rc),zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+        def save(fig,stem):
+            for ext in ['pdf','svg','png']:
+                b=io.BytesIO();fig.savefig(b,format=ext,dpi=600,facecolor='white',bbox_inches='tight');z.writestr(f'{stem}.{ext}',b.getvalue())
+            plt.close(fig)
+        # Family profile grid
+        if families:
+            cols=2;rows=int(np.ceil(len(families)/cols));fig,axs=plt.subplots(rows,cols,figsize=(8.0,3.0*rows),squeeze=False,sharey=True,layout='constrained')
+            for idx,fam in enumerate(families):
+                ax=axs[idx//cols,idx%cols]
+                for salt in salts:
+                    inv={v:int(k) for k,v in mapping.get(salt,{}).items() if v!='Unmapped'}
+                    if fam not in inv:continue
+                    q=packages[salt]['profiles'];q=q[q.cluster.astype(int)==inv[fam]]
+                    ax.plot(q[xcol],q.median_blockade_nA,label=salt,color=SALT_COLORS.get(salt),lw=1.5)
+                ax.set_title(f'Family {fam}');ax.set_xlabel(xlabel);ax.set_ylabel('Median blockade (nA)')
+                if x_range is not None:ax.set_xlim(*x_range)
+                if y_range is not None:ax.set_ylim(*y_range)
+            for idx in range(len(families),rows*cols):axs[idx//cols,idx%cols].axis('off')
+            axs[0,0].legend(frameon=False,ncol=min(5,len(salts)),fontsize=8)
+            save(fig,'main_family_profiles_across_salts')
+        # Population fractions
+        fig,ax=plt.subplots(figsize=(6.4,4.1),layout='constrained');bottom=np.zeros(len(salts))
+        plot_fams=families+(['Unmapped'] if 'Unmapped' in set(stats.family) else [])
+        for j,fam in enumerate(plot_fams):
+            vals=[]
+            for salt in salts:
+                q=stats[(stats.salt==salt)&(stats.family==fam)];vals.append(float(q.population_pct.sum()) if len(q) else 0.)
+            color='#999999' if fam=='Unmapped' else FAMILY_COLORS.get(fam,PALETTE[j%len(PALETTE)])
+            ax.bar(salts,vals,bottom=bottom,label=('Unmapped' if fam=='Unmapped' else f'Family {fam}'),color=color);bottom+=np.asarray(vals)
+        ax.set_ylim(0,100);ax.set_ylabel('Population (%)');ax.set_xlabel('Electrolyte');ax.legend(frameon=False,ncol=2)
+        save(fig,'main_family_population_fractions')
+        # Dwell + blockade trends
+        for stem,metric,lo,hi,ylabel in [
+            ('main_family_dwell_time','median_dwell_ms','q1_dwell_ms','q3_dwell_ms','Median dwell time (ms)'),
+            ('main_family_blockade','median_blockade_nA','q1_blockade_nA','q3_blockade_nA','Median mean blockade (nA)'),
+        ]:
+            fig,ax=plt.subplots(figsize=(6.4,4.1),layout='constrained')
+            for j,fam in enumerate(families):
+                xs=[];ys=[];yerrlo=[];yerrhi=[]
+                for si,salt in enumerate(salts):
+                    q=stats[(stats.salt==salt)&(stats.family==fam)]
+                    if not len(q):continue
+                    row=q.iloc[0];v=float(row[metric])
+                    if not np.isfinite(v):continue
+                    xs.append(si);ys.append(v);l=float(row[lo]);h=float(row[hi]);yerrlo.append(max(0,v-l) if np.isfinite(l) else 0);yerrhi.append(max(0,h-v) if np.isfinite(h) else 0)
+                if xs:ax.errorbar(xs,ys,yerr=[yerrlo,yerrhi],marker='o',lw=1.4,capsize=3,label=f'Family {fam}',color=FAMILY_COLORS.get(fam,PALETTE[j%len(PALETTE)]))
+            ax.set_xticks(range(len(salts)),salts);ax.set_xlabel('Electrolyte');ax.set_ylabel(ylabel);ax.legend(frameon=False)
+            save(fig,stem)
+        if reference_family and 'relative_blockade' in stats:
+            fig,ax=plt.subplots(figsize=(6.4,4.1),layout='constrained')
+            for j,fam in enumerate(families):
+                q=stats[stats.family==fam].set_index('salt').reindex(salts)
+                ax.plot(range(len(salts)),q.relative_blockade,marker='o',label=f'Family {fam}',color=FAMILY_COLORS.get(fam,PALETTE[j%len(PALETTE)]))
+            ax.axhline(1,color='0.6',lw=.8);ax.set_xticks(range(len(salts)),salts);ax.set_xlabel('Electrolyte');ax.set_ylabel(f'Blockade / Family {reference_family} blockade');ax.legend(frameon=False)
+            save(fig,'main_relative_blockade_to_reference_family')
+        z.writestr('cross_salt_family_summary.csv',stats.to_csv(index=False))
+        z.writestr('family_mapping.json',json.dumps({s:{str(k):v for k,v in m.items()} for s,m in mapping.items()},indent=2))
+        z.writestr('README.txt','Cross-salt comparison export. Family labels are user-confirmed correspondences between separately clustered recordings; cluster IDs are not assumed homologous across salts. Error bars on dwell/blockade trend plots are event-level IQRs, not replicate-level uncertainty.\n')
     return out.getvalue()

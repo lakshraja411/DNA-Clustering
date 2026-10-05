@@ -1,3 +1,54 @@
+# DNA Event Lab 0.6 · Hart-style DNA event-family clustering
+
+Version 0.6 redesigns Step 5 around the DNA conformation-clustering logic used in Hart et al. (NanoBoost), while retaining the app's explicit resolved-level QC. The primary clustering methods are now **PCA + Ward agglomerative** and **PCA + k-means**. Waveform k-means/DTW and the old automatic weighted-rank selector are no longer part of the Step 5 interface.
+
+## DNA feature model
+
+For each physically eligible event the app can cluster a deliberately interpretable feature set spanning:
+
+- total detected dwell time;
+- duration-weighted mean resolved blockade, `Σ(L_k T_k)/ΣT_k`;
+- deepest sustained plateau;
+- resolved plateau-height range;
+- optional duration-weighted plateau-height SD;
+- measured event charge deficit (ECD);
+- number of resolved levels;
+- optional fraction of retained duration above a calibrated deeper-blockade threshold;
+- fraction of analysed time spent in the deepest state;
+- position of the deepest plateau within the detected event;
+- blockade temporal centroid;
+- end-to-start transition direction;
+- duration-weighted plateau-height skewness.
+
+When a condition-specific single-file reference `ΔI0` is supplied, the main amplitude descriptors are available as ratios to `ΔI0`. The app does not infer `ΔI0` or assign fold/strand identities. ECD is always integrated from the measured trace; the resolved-level amplitude descriptors use the selected fit or measured samples within selected-fit boundaries according to the Step 5 source setting.
+
+Constant descriptors and near-duplicates (`|r| >= 0.98`) are removed before PCA. The retained features are z-score standardised.
+
+## Hart-style analysis sequence and plots
+
+Step 5 now follows this sequence:
+
+`resolved levels → DNA feature matrix → feature-correlation QC → z-score scaling → PCA scree plot → choose PCA dimension → elbow + silhouette scan over k → choose k → Ward agglomerative or k-means → physical/profile interpretation`
+
+The interface and export pack provide analogues of the main/supplementary clustering analyses:
+
+- feature correlation heatmap;
+- PCA scree + cumulative-variance plot;
+- combined elbow/within-cluster-dispersion + silhouette plot;
+- PC1–PC2 cluster map with convex-hull visual guides;
+- optional 3-PC view;
+- Ward dendrogram for agglomerative clustering;
+- per-cluster member waveform panels with a 10th–90th percentile envelope and mean representative;
+- overlay of representative profiles;
+- one real representative event per cluster in actual milliseconds;
+- a Hart-style cluster feature/population table using medians in original physical units;
+- PCA loading plots;
+- PDF/SVG/600-dpi PNG main + supplementary figure pack plus CSV tables.
+
+The elbow and silhouette outputs are intentionally guidance rather than an automatic biological truth. If they disagree, inspect both candidate solutions, the PCA geometry, member traces, physical medians and reproducibility across recordings.
+
+---
+
 ## Boundary handling correction (0.5.1)
 
 Step 5 → Physical feature settings → **Omit short boundary plateaus from physical features** is enabled by default and can be disabled for comparison. After adjacent height merging, only the first and last merged plateaus can be omitted if shorter than the effective minimum duration. The algorithm does not repeatedly peel further short segments: short internal plateaus still require review. A wholly short event has no sustained core and remains excluded. This is an explicit analysis policy, not proof that the boundary segment is an artefact.

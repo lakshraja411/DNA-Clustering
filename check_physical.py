@@ -49,3 +49,18 @@ a,seq=level_features([e],deep_threshold_nA=1.5)
 np.testing.assert_allclose(a.deep_time_fraction,[.5]);np.testing.assert_allclose(a.duration_ms,[1.01]);np.testing.assert_allclose(a.analysed_duration_ms,[1.])
 np.testing.assert_array_equal(e.fit,saved)
 print('PASS: edge omission on/off, both edges, internal short-level exclusion, no sustained core, audit coverage, occupancy denominator and preserved total duration.')
+
+# DNA feature checks: duration-weighted plateau statistics and temporal descriptors.
+e=event(20,[1,2,1],[100,600,300])
+a,seq=level_features([e],reference_nA=1.,deep_threshold_nA=1.5,omit_short_boundaries=False)
+r=a.iloc[0]
+np.testing.assert_allclose(r.resolved_weighted_mean_nA,1.6,rtol=1e-10)
+np.testing.assert_allclose(r.resolved_weighted_mean_ratio,1.6,rtol=1e-10)
+np.testing.assert_allclose(r.deepest_plateau_nA,2.,rtol=1e-10)
+np.testing.assert_allclose(r.resolved_blockade_range_nA,1.,rtol=1e-10)
+np.testing.assert_allclose(r.deepest_plateau_fraction,.6,rtol=1e-10)
+# Deep plateau spans 0.5–3.5 ms in a 5 ms event, so its centre lies at 0.4 of total duration.
+np.testing.assert_allclose(r.deepest_plateau_position,.4,rtol=1e-10)
+assert 0 < r.blockade_temporal_centroid < 1
+assert np.isfinite(r.blockade_skewness) and np.isfinite(r.ecd_nA_ms)
+print('PASS: weighted mean/range, reference normalisation, deepest-state occupancy/position, temporal centroid, skewness and measured ECD.')

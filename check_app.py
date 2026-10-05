@@ -51,16 +51,16 @@ assert at.session_state['refs']
 step(4);button('Prepare publication figures').click().run();assert not at.exception
 step(5);button('Run clustering').click().run();assert not at.exception,at.exception
 assert at.session_state['group']['meta']['clustering']['source']=='Selected fits'
-assert at.session_state['group']['meta']['clustering']['selection']=='automatic'
+assert at.session_state['group']['meta']['clustering']['selection'].startswith('manual after Hart-style')
 assert 2<=at.session_state['group']['meta']['clustering']['k']<=8
-assert at.session_state['group']['info']['selection_table']
-assert at.session_state['group']['meta']['clustering']['feature_set']=='Physical level features'
+assert at.session_state['group']['scan']['table']
+assert at.session_state['group']['meta']['clustering']['feature_set']=='DNA physical + morphology features'
 assert len(at.session_state['group']['sequences'])
 g=at.session_state['group'];assert len(g['table'])+len(g['excluded'])==len(small)
-assert any(h.value=='PC1–PC2 view of the event groups' for h in at.subheader)
-button('Prepare combined publication figure').click().run();assert not at.exception
-with zipfile.ZipFile(io.BytesIO(at.session_state['publication_figure'][1])) as z:
- assert 'cluster_figure.pdf' in z.namelist() and 'actual_time_examples.csv' in z.namelist()
+assert any(h.value=='Main-style PCA cluster map' for h in at.subheader)
+button('Prepare Hart-style main + supplementary figure pack').click().run();assert not at.exception
+with zipfile.ZipFile(io.BytesIO(at.session_state['hart_export'][1])) as z:
+ assert 'main_pca_clusters.pdf' in z.namelist() and 'supp_scree.pdf' in z.namelist() and 'supp_elbow_silhouette.pdf' in z.namelist()
 button('Prepare cluster profile figures').click().run();assert not at.exception
 assert len(zipfile.ZipFile(io.BytesIO(at.session_state['cluster_figures'][1])).namelist())==5
 next(b for b in at.button if b.key=='next_bottom').click().run();assert not at.exception
@@ -78,11 +78,11 @@ assert 'group' not in at.session_state
 next(w for w in at.checkbox if w.label=='Omit short boundary plateaus from physical features').check().run();assert not at.exception
 button('Run clustering').click().run();assert not at.exception
 assert at.session_state['group']
-next(w for w in at.slider if w.label=='Maximum clusters to test').set_value(7).run();assert not at.exception
+next(w for w in at.slider if w.label=='Largest k to include in elbow–silhouette scan').set_value(7).run();assert not at.exception
 assert 'group' not in at.session_state
 step(6);assert not at.exception
 step(1);assert at.session_state['recording_confirmed'];assert at.session_state['refs']
 step(2);assert at.session_state['refs']
 button('Clear files and start over').click().run();assert not at.exception
 assert 'project' not in at.session_state and 'refs' not in at.session_state
-print('PASS: 1,400 three-file matches; refined-fit reload and preservation; fitted-feature input; automatic k selection diagnostics; cluster subset alignment; scientific exports; guided UI and stale-group invalidation.')
+print('PASS: three-file matching; refined-fit preservation; DNA physical features; Hart-style elbow/silhouette diagnostics; PCA clustering; cluster subset alignment; Hart-style exports; guided UI and stale-group invalidation.')

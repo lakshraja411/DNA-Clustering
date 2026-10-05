@@ -7,7 +7,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.5.1'
+VERSION='0.6.0'
 @dataclass
 class Event:
     index:int
@@ -290,129 +290,172 @@ def feature_table(events):
              wavelet_approx_mean=float(a.mean()),wavelet_approx_std=float(a.std()),wavelet_detail_energy=float(sum(np.sum(c*c) for c in coefs[1:])/len(y))))
     return pd.DataFrame(rows)
 
-def _feature_space(features,n_components=None,variance_threshold=None,correlation_threshold=None):
-    """Standardise features and build the PCA space used for feature clustering.
+def _feature_space(features,n_components=2,correlation_threshold=.98):
+    """Standardise selected features, prune constants/near-duplicates, then fit PCA.
 
-    Constant columns are removed because they contain no clustering information.
-    If variance_threshold is supplied, the smallest number of PCs reaching that
-    cumulative explained variance is retained. Otherwise n_components is used.
+    The pruning order follows the supplied feature order, so the user-facing feature list
+    should place the preferred physical representative of a correlated family first.
     """
     from sklearn.preprocessing import StandardScaler
     x=np.asarray(features,float)
     if x.ndim!=2 or len(x)<3:raise ValueError('Feature matrix must contain at least three events.')
     if not np.isfinite(x).all():raise ValueError('All selected clustering features must be finite.')
     keep=np.nanstd(x,axis=0)>1e-12
-    if correlation_threshold is not None and keep.sum()>2:
+    dropped_constant=np.flatnonzero(~keep).tolist()
+    dropped_correlated=[]
+    if correlation_threshold is not None and keep.sum()>1:
         idx=np.flatnonzero(keep);corr=np.corrcoef(x[:,idx],rowvar=False);chosen=[]
         for j in range(len(idx)):
-            if not chosen or all(abs(corr[j,h])<correlation_threshold for h in chosen):chosen.append(j)
+            if not chosen or all(abs(corr[j,h])<float(correlation_threshold) for h in chosen):
+                chosen.append(j)
+            else:
+                dropped_correlated.append(int(idx[j]))
         reduced=np.zeros_like(keep);reduced[idx[chosen]]=True;keep=reduced
     if keep.sum()<1:raise ValueError('Need at least one non-constant clustering feature after pruning.')
     scaler=StandardScaler();scaled=scaler.fit_transform(x[:,keep])
     full=PCA().fit(scaled);max_nc=min(scaled.shape[1],len(scaled)-1)
-    if variance_threshold is not None:
-        if not 0.5<=variance_threshold<=0.999:raise ValueError('PCA variance threshold must be between 0.5 and 0.999.')
-        nc=int(np.searchsorted(np.cumsum(full.explained_variance_ratio_),variance_threshold)+1)
-    else:
-        nc=int(n_components or 2)
-    nc=max(1,min(nc,max_nc));coords=full.transform(scaled)[:,:nc]
-    return dict(raw=x,keep=keep,scaled=scaled,scaler=scaler,pca=full,n_components=nc,coords=coords)
+    nc=max(1,min(int(n_components or 2),max_nc))
+    transformed=full.transform(scaled);coords=transformed[:,:nc]
+    return dict(raw=x,keep=keep,scaled=scaled,scaler=scaler,pca=full,n_components=nc,coords=coords,full_coords=transformed,
+                dropped_constant=dropped_constant,dropped_correlated=dropped_correlated,correlation_threshold=correlation_threshold)
 
-def _cluster_coords(coords,k,method,random_state=42):
+
+def feature_space_diagnostics(features,feature_names=None,correlation_threshold=.98):
+    """Return PCA/correlation diagnostics without assigning clusters."""
+    x=np.asarray(features,float)
+    names=list(feature_names or [f'feature_{i}' for i in range(x.shape[1])])
+    # Request all possible PCs; _feature_space clips safely.
+    space=_feature_space(x,n_components=max(1,x.shape[1]),correlation_threshold=correlation_threshold)
+    retained=[n for n,k in zip(names,space['keep']) if k]
+    dropped_constant=[names[i] for i in space['dropped_constant']]
+    dropped_correlated=[names[i] for i in space['dropped_correlated']]
+    raw_corr=np.corrcoef(x,rowvar=False) if x.shape[1]>1 else np.array([[1.]])
+    return dict(
+        feature_names=names,retained_features=retained,dropped_constant=dropped_constant,dropped_correlated=dropped_correlated,
+        keep_mask=space['keep'].tolist(),correlation=raw_corr.tolist(),scree=space['pca'].explained_variance_ratio_.tolist(),
+        cumulative=np.cumsum(space['pca'].explained_variance_ratio_).tolist(),max_components=int(space['full_coords'].shape[1]))
+
+
+def _ward_linkage(coords):
+    """Build a SciPy-compatible Ward linkage matrix from sklearn's full tree."""
     from sklearn.cluster import AgglomerativeClustering
+    model=AgglomerativeClustering(distance_threshold=0,n_clusters=None,linkage='ward',compute_distances=True).fit(coords)
+    counts=np.zeros(model.children_.shape[0],float);n=len(model.labels_)
+    for i,merge in enumerate(model.children_):
+        c=0.
+        for child in merge:
+            c+=1. if child<n else counts[int(child)-n]
+        counts[i]=c
+    return np.column_stack([model.children_,model.distances_,counts]).astype(float)
+
+
+def _cut_ward(linkage_matrix,k):
+    from scipy.cluster.hierarchy import cut_tree
+    return cut_tree(linkage_matrix,n_clusters=[int(k)]).reshape(-1).astype(int)
+
+
+def _cluster_coords(coords,k,method,random_state=42,linkage_matrix=None):
     if len(coords)<=k or np.unique(coords,axis=0).shape[0]<k:raise ValueError('Too few distinct PCA coordinates for this k.')
     if 'agglomerative' in method.lower():
-        return AgglomerativeClustering(n_clusters=k,linkage='ward').fit_predict(coords)
-    return KMeans(n_clusters=k,n_init=20,random_state=random_state).fit_predict(coords)
+        linkage_matrix=_ward_linkage(coords) if linkage_matrix is None else linkage_matrix
+        return _cut_ward(linkage_matrix,k),linkage_matrix,None
+    model=KMeans(n_clusters=k,n_init=20,random_state=random_state).fit(coords)
+    return model.labels_.astype(int),None,model.cluster_centers_.copy()
 
-def _ordered_feature_result(space,profiles,k,method,random_state=42):
-    coords=space['coords'];labels=_cluster_coords(coords,k,method,random_state)
-    raw_centers=np.array([profiles[labels==j].mean(axis=0) for j in range(k)])
-    # Stable, interpretable cluster IDs: shallowest mean profile is Group 0.
-    order=np.argsort(raw_centers.mean(axis=1));remap=np.empty(k,int);remap[order]=np.arange(k);labels=remap[labels];centers=raw_centers[order]
-    sil=float(silhouette_score(coords,labels,sample_size=min(1500,len(coords)),random_state=42))
-    ch=float(calinski_harabasz_score(coords,labels));db=float(davies_bouldin_score(coords,labels))
-    embedding=coords[:,:2] if space['n_components']>=2 else np.c_[coords[:,0],np.zeros(len(coords))]
-    dispersion=float(sum(np.sum((coords[labels==j]-coords[labels==j].mean(axis=0))**2) for j in range(k)))
-    ari=np.nan
-    if 'k-means' in method.lower():
-        second=_cluster_coords(coords,k,method,random_state+1);ari=float(adjusted_rand_score(labels,second))
-    full=space['pca'];scaler=space['scaler']
-    return dict(labels=labels,centers=centers,profiles=np.asarray(profiles,float),silhouette=sil,calinski_harabasz=ch,davies_bouldin=db,ari=ari,embedding=embedding,
-       pca_variance=full.explained_variance_ratio_[:min(2,space['n_components'])].tolist(),scree=full.explained_variance_ratio_.tolist(),
-       loadings=full.components_[:space['n_components']].tolist(),feature_keep_mask=space['keep'].tolist(),
-       feature_mean=scaler.mean_.tolist(),feature_scale=scaler.scale_.tolist(),n_components=space['n_components'],dispersion=dispersion,
-       center_note='Unaligned mean waveforms of feature-cluster members; not reconstructed feature centroids.',metric='Euclidean in standardised retained PCA space')
 
-def cluster_features(features,profiles,k,n_components=2,method='PCA + agglomerative (DNA concept)',variance_threshold=None):
-    """Cluster selected event features after standardisation and PCA.
+def _dispersion(coords,labels):
+    return float(sum(np.sum((coords[labels==j]-coords[labels==j].mean(axis=0))**2) for j in np.unique(labels)))
 
-    Set variance_threshold (for example 0.95) to choose the number of PCs
-    automatically. Otherwise n_components is retained for manual compatibility.
+
+def _elbow_from_dispersion(ks,values):
+    """Simple scale-free knee estimate: largest departure below endpoint chord."""
+    ks=np.asarray(ks,float);y=np.asarray(values,float)
+    if len(ks)<3 or np.ptp(y)<=1e-15:return int(ks[np.argmin(y)]),0.
+    x=(ks-ks.min())/max(np.ptp(ks),1e-12);yn=(y-y.min())/np.ptp(y)
+    chord=1.-x;distance=chord-yn
+    j=int(np.argmax(distance));return int(ks[j]),float(max(distance[j],0.))
+
+
+def cluster_count_diagnostics(features,method='PCA + agglomerative',n_components=2,k_min=2,k_max=8,feature_names=None,correlation_threshold=.98,random_state=42):
+    """Hart-style k scan: within-cluster dispersion ('elbow') plus silhouette.
+
+    Calinski-Harabasz and Davies-Bouldin are retained as secondary diagnostics, but
+    the main visual decision mirrors the paper: inspect the elbow and silhouette together.
     """
-    space=_feature_space(features,n_components=n_components,variance_threshold=variance_threshold)
-    return _ordered_feature_result(space,profiles,k,method)
-
-def auto_cluster_features(features,profiles,method='PCA + agglomerative (DNA concept)',k_min=2,k_max=8,variance_threshold=.95,stability_repeats=6,stability_fraction=.8,random_state=42):
-    """Choose k from internal separation metrics plus subsampling stability.
-
-    Near-duplicate features (absolute Pearson r >= 0.98) are pruned before PCA.
-    Candidate k values are compared using silhouette (higher), Calinski-Harabasz
-    (higher), Davies-Bouldin (lower), and adjusted-Rand stability (higher).
-    The selected k minimises a weighted rank consensus, with silhouette and stability weighted twice.
-    Stability re-fits scaling + PCA + clustering on deterministic subsamples.
-    """
-    x=np.asarray(features,float);profiles=np.asarray(profiles,float)
-    if k_min<2 or k_max<k_min:raise ValueError('Invalid automatic cluster range.')
-    k_max=min(int(k_max),len(x)-1);k_min=int(k_min)
-    if k_max<k_min:raise ValueError('Not enough events for the requested automatic cluster range.')
-    full_space=_feature_space(x,variance_threshold=variance_threshold,correlation_threshold=.98)
-    candidate_labels={};rows=[]
+    x=np.asarray(features,float);k_min=max(2,int(k_min));k_max=min(int(k_max),len(x)-1)
+    if k_max<k_min:raise ValueError('Not enough events for the requested cluster-count range.')
+    space=_feature_space(x,n_components=n_components,correlation_threshold=correlation_threshold);coords=space['coords']
+    linkage_matrix=_ward_linkage(coords) if 'agglomerative' in method.lower() else None
+    rows=[]
     for k in range(k_min,k_max+1):
         try:
-            labels=_cluster_coords(full_space['coords'],k,method,random_state);candidate_labels[k]=labels
+            labels,_,_= _cluster_coords(coords,k,method,random_state,linkage_matrix)
             counts=np.bincount(labels,minlength=k)
-            rows.append(dict(k=k,silhouette=float(silhouette_score(full_space['coords'],labels,sample_size=min(1500,len(x)),random_state=random_state)),
-                calinski_harabasz=float(calinski_harabasz_score(full_space['coords'],labels)),davies_bouldin=float(davies_bouldin_score(full_space['coords'],labels)),
-                stability=np.nan,min_cluster_size=int(counts.min()),min_cluster_fraction=float(counts.min()/len(x))))
-        except ValueError:
-            continue
+            rows.append(dict(k=k,dispersion=_dispersion(coords,labels),
+                silhouette=float(silhouette_score(coords,labels,sample_size=min(2000,len(coords)),random_state=random_state)),
+                calinski_harabasz=float(calinski_harabasz_score(coords,labels)),
+                davies_bouldin=float(davies_bouldin_score(coords,labels)),
+                min_cluster_size=int(counts.min()),min_cluster_fraction=float(counts.min()/len(coords))))
+        except ValueError:pass
     if not rows:raise ValueError('No valid cluster counts could be evaluated.')
-    rng=np.random.default_rng(random_state);stability={r['k']:[] for r in rows}
-    n_sub=max(k_max+2,min(len(x)-1,int(round(len(x)*float(stability_fraction))),600))
-    n_sub=min(n_sub,len(x))
-    for rep in range(int(stability_repeats)):
-        idx=np.sort(rng.choice(len(x),n_sub,replace=False)) if n_sub<len(x) else np.arange(len(x))
-        try:subspace=_feature_space(x[idx],variance_threshold=variance_threshold,correlation_threshold=.98)
-        except ValueError:continue
-        for k in stability:
-            if len(idx)<=k:continue
-            try:
-                sublabels=_cluster_coords(subspace['coords'],k,method,random_state+rep+1)
-                stability[k].append(float(adjusted_rand_score(candidate_labels[k][idx],sublabels)))
-            except ValueError:pass
-    for r in rows:
-        vals=stability[r['k']];r['stability']=float(np.mean(vals)) if vals else np.nan;r['stability_sd']=float(np.std(vals)) if vals else np.nan;r['stability_successful_repeats']=len(vals)
     d=pd.DataFrame(rows).sort_values('k').reset_index(drop=True)
-    rank_specs=[('silhouette',False),('calinski_harabasz',False),('davies_bouldin',True),('stability',False)]
-    rank_cols=[]
-    for col,ascending in rank_specs:
-        rc='rank_'+col;rank_cols.append(rc)
-        vals=d[col].replace([np.inf,-np.inf],np.nan)
-        worst=len(d)+1
-        d[rc]=vals.rank(method='average',ascending=ascending,na_option='bottom').fillna(worst)
-    d['consensus_rank']=(2*d['rank_silhouette']+d['rank_calinski_harabasz']+d['rank_davies_bouldin']+2*d['rank_stability'])/6
-    chosen=d.sort_values(['consensus_rank','stability','silhouette','k'],ascending=[True,False,False,True]).iloc[0]
-    selected_k=int(chosen['k']);result=_ordered_feature_result(full_space,profiles,selected_k,method,random_state)
-    weak=[]
-    if int(chosen['stability_successful_repeats'])<int(stability_repeats):weak.append('some stability repeats unavailable')
-    if selected_k==k_max:weak.append('suggested k is at the upper search boundary; compare a wider range')
-    if int(chosen['min_cluster_size'])<max(5,int(np.ceil(.01*len(x)))):weak.append('a group contains very few events; inspect for outliers')
-    if float(chosen['silhouette'])<.25:weak.append('low silhouette separation')
-    if np.isfinite(chosen['stability']) and float(chosen['stability'])<.6:weak.append('low resampling stability')
-    result.update(selected_k=selected_k,selection_table=d.to_dict('records'),selection_method='Weighted rank consensus: silhouette ×2, subsampling ARI stability ×2, Calinski-Harabasz ×1 and Davies-Bouldin ×1',
-        variance_threshold=float(variance_threshold),stability_repeats=int(stability_repeats),stability_fraction=float(stability_fraction),stability_sample_size=int(n_sub),effective_stability_fraction=float(n_sub/len(x)),correlation_threshold=.98,
-        selection_warning=('Review suggested grouping: '+', '.join(weak)+'.') if weak else '')
+    elbow_k,elbow_strength=_elbow_from_dispersion(d.k,d.dispersion)
+    silhouette_k=int(d.loc[d.silhouette.idxmax(),'k'])
+    agreement=elbow_k==silhouette_k
+    suggested_k=elbow_k if agreement else silhouette_k
+    names=list(feature_names or [f'feature_{i}' for i in range(x.shape[1])])
+    return dict(table=d.to_dict('records'),elbow_k=int(elbow_k),silhouette_k=int(silhouette_k),suggested_k=int(suggested_k),
+                elbow_strength=float(elbow_strength),agreement=bool(agreement),scree=space['pca'].explained_variance_ratio_.tolist(),
+                cumulative=np.cumsum(space['pca'].explained_variance_ratio_).tolist(),feature_keep_mask=space['keep'].tolist(),
+                retained_features=[n for n,k in zip(names,space['keep']) if k],dropped_constant=[names[i] for i in space['dropped_constant']],
+                dropped_correlated=[names[i] for i in space['dropped_correlated']],n_components=space['n_components'])
+
+
+def _ordered_feature_result(space,profiles,k,method,random_state=42):
+    coords=space['coords'];labels,linkage_matrix,pca_centers=_cluster_coords(coords,k,method,random_state)
+    raw_centers=np.array([profiles[labels==j].mean(axis=0) for j in range(k)])
+    # Stable display IDs: shallowest mean waveform becomes Cluster 0.
+    order=np.argsort(raw_centers.mean(axis=1));remap=np.empty(k,int);remap[order]=np.arange(k)
+    labels=remap[labels];centers=raw_centers[order]
+    if pca_centers is not None:pca_centers=pca_centers[order]
+    sil=float(silhouette_score(coords,labels,sample_size=min(2000,len(coords)),random_state=42))
+    ch=float(calinski_harabasz_score(coords,labels));db=float(davies_bouldin_score(coords,labels));dispersion=_dispersion(coords,labels)
+    ari=np.nan
+    if 'k-means' in method.lower():
+        second,_,_=_cluster_coords(coords,k,method,random_state+1);ari=float(adjusted_rand_score(labels,second))
+    full=space['pca'];scaler=space['scaler'];full_coords=space['full_coords']
+    embedding=full_coords[:,:2] if full_coords.shape[1]>=2 else np.c_[full_coords[:,0],np.zeros(len(full_coords))]
+    embedding3=full_coords[:,:3] if full_coords.shape[1]>=3 else None
+    return dict(labels=labels,centers=centers,profiles=np.asarray(profiles,float),silhouette=sil,calinski_harabasz=ch,davies_bouldin=db,ari=ari,
+       embedding=embedding,embedding3=embedding3,pca_variance=full.explained_variance_ratio_[:min(3,len(full.explained_variance_ratio_))].tolist(),
+       scree=full.explained_variance_ratio_.tolist(),cumulative=np.cumsum(full.explained_variance_ratio_).tolist(),
+       loadings=full.components_[:space['n_components']].tolist(),feature_keep_mask=space['keep'].tolist(),
+       feature_mean=scaler.mean_.tolist(),feature_scale=scaler.scale_.tolist(),n_components=space['n_components'],dispersion=dispersion,
+       linkage_matrix=linkage_matrix,pca_centers=pca_centers,dropped_constant=space['dropped_constant'],dropped_correlated=space['dropped_correlated'],
+       center_note='Mean duration-normalised waveforms of feature-cluster members; not reconstructed PCA centroids.',metric='Euclidean in standardised retained PCA space')
+
+
+def cluster_features(features,profiles,k,n_components=2,method='PCA + agglomerative',correlation_threshold=.98):
+    """Cluster DNA event features after constant/correlation pruning, z-scoring and PCA."""
+    space=_feature_space(features,n_components=n_components,correlation_threshold=correlation_threshold)
+    return _ordered_feature_result(space,profiles,k,method)
+
+
+def auto_cluster_features(features,profiles,method='PCA + agglomerative',k_min=2,k_max=8,variance_threshold=.95,stability_repeats=6,stability_fraction=.8,random_state=42):
+    """Backward-compatible wrapper retained for older tests/scripts.
+
+    Version 0.6 uses the Hart-style elbow + silhouette scan in the UI.  This wrapper
+    chooses the scan's suggestion and then returns the corresponding clustering.
+    ``variance_threshold`` is translated to the smallest PCA dimension reaching the
+    requested cumulative variance.
+    """
+    x=np.asarray(features,float)
+    diag0=feature_space_diagnostics(x,correlation_threshold=.98)
+    cum=np.asarray(diag0['cumulative']);npc=int(np.searchsorted(cum,float(variance_threshold))+1);npc=max(1,npc)
+    scan=cluster_count_diagnostics(x,method,npc,k_min,k_max,correlation_threshold=.98,random_state=random_state)
+    result=cluster_features(x,profiles,scan['suggested_k'],npc,method,.98)
+    result.update(selected_k=int(scan['suggested_k']),selection_table=scan['table'],selection_method='Hart-style elbow + silhouette scan',
+                  elbow_k=scan['elbow_k'],silhouette_k=scan['silhouette_k'],selection_warning='' if scan['agreement'] else f'Elbow suggests k={scan["elbow_k"]} while silhouette peaks at k={scan["silhouette_k"]}; inspect both solutions.')
     return result
 
 def cluster_dtw(profiles,k,shape_only=False,radius=4):

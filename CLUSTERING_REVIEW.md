@@ -43,3 +43,15 @@ The review also fixed rejection of a valid one-feature space after redundant-fea
 The six-step UI test passed, including Next/Previous callbacks, session retention, automatic clustering, refinement and cluster downloads. A separated two-population numerical fixture was recovered exactly (ARI 1.0), including after correlated-feature pruning left one informative feature. A single Gaussian cloud was still split into five groups; low separation and stability warnings appeared. This directly demonstrates why the auto suggestion is not a test for distinct populations.
 
 On the supplied 1,400-event fitting export with uploaded fits and all descriptors, default automatic settings suggested two groups, retaining six PCs. Silhouette was about 0.312; stability samples used 600/1,400 events (42.9%). These numbers describe this run's signal geometry, not biological identities, and can change after refinement or feature/source changes. There is no independent topology benchmark here.
+
+---
+
+# Version 0.6 Hart-style DNA clustering redesign
+
+Step 5 now uses a DNA-specific resolved-level feature model rather than the old automatic weighted-rank engine. The interface exposes only PCA + Ward agglomerative and PCA + k-means as primary clustering algorithms. The same selected features, constant/near-duplicate pruning (|r| >= 0.98), z-score scaling and PCA preprocessing are used for both algorithms.
+
+The default candidate feature set includes detected dwell time, duration-weighted resolved blockade, deepest sustained blockade, resolved blockade range, measured ECD, number of resolved levels, deepest-state occupancy and position, blockade temporal centroid, transition direction and duration-weighted plateau-height skewness. A duration-weighted plateau-height SD is available but is not selected by default. A calibrated single-file reference switches the principal amplitude descriptors to ratios; an optional deeper-blockade threshold adds deep-time fraction.
+
+The cluster-count workflow now mirrors the Hart/NanoBoost presentation more closely: PCA dimensionality is inspected with a scree/cumulative-variance plot, and candidate k values are compared with within-cluster dispersion (elbow) and silhouette. The app deliberately does not force agreement between these diagnostics. The chosen k is explicit and manual. Calinski-Harabasz and Davies-Bouldin remain secondary numerical checks.
+
+The result view adds a Hart-style feature/population table, cluster-member waveform panels, representative-profile overlay, PC1-PC2 map, optional 3-PC view, and a Ward dendrogram for agglomerative clustering. The export ZIP writes main-style and supplementary-style PDF/SVG/600-dpi PNG panels plus the underlying tables. These plots are analytical analogues generated from the user's data; they do not reproduce published artwork.

@@ -237,3 +237,168 @@ def time_example_figure(table):
         f.add_trace(go.Scatter(x=sub.time_ms,y=sub.blockade_nA,mode='lines',line=dict(color=PALETTE[j%len(PALETTE)],width=1.7),name=f'Cluster {group} · event {sub.event_id.iloc[0]}'))
     f.update_layout(xaxis_title='Time from detected event start (ms)',yaxis_title='Current blockade (nA)',height=420)
     return f
+
+# -----------------------------------------------------------------------------
+# Hart-style DNA clustering diagnostics (v0.6)
+# -----------------------------------------------------------------------------
+def pca_scree_figure(scree):
+    variance=100*np.asarray(scree,float);pcs=np.arange(1,len(variance)+1);cum=np.cumsum(variance)
+    f=go.Figure()
+    f.add_trace(go.Bar(x=pcs,y=variance,name='Explained variance'))
+    f.add_trace(go.Scatter(x=pcs,y=cum,name='Cumulative variance',mode='lines+markers',yaxis='y2'))
+    f.update_layout(xaxis_title='Principal component',yaxis_title='Explained variance (%)',
+                    yaxis2=dict(title='Cumulative variance (%)',overlaying='y',side='right',range=[0,105]),height=420,
+                    legend=dict(orientation='h'))
+    return f
+
+
+def k_diagnostics_figure(table,elbow_k=None,silhouette_k=None):
+    import pandas as pd
+    d=pd.DataFrame(table)
+    f=go.Figure()
+    f.add_trace(go.Scatter(x=d.k,y=d.dispersion,mode='lines+markers',name='Within-cluster dispersion'))
+    f.add_trace(go.Scatter(x=d.k,y=d.silhouette,mode='lines+markers',name='Silhouette',yaxis='y2'))
+    if elbow_k is not None:f.add_vline(x=elbow_k,line_dash='dot',annotation_text=f'Elbow k={elbow_k}',annotation_position='top left')
+    if silhouette_k is not None:f.add_vline(x=silhouette_k,line_dash='dash',annotation_text=f'Silhouette k={silhouette_k}',annotation_position='top right')
+    f.update_layout(xaxis_title='Number of clusters, k',yaxis_title='Within-cluster dispersion',
+                    yaxis2=dict(title='Silhouette score',overlaying='y',side='right'),height=430,legend=dict(orientation='h'))
+    return f
+
+
+def feature_correlation_figure(corr,names):
+    c=np.asarray(corr,float)
+    f=go.Figure(go.Heatmap(z=c,x=names,y=names,zmin=-1,zmax=1,colorscale='RdBu',reversescale=True,
+                           colorbar=dict(title='Pearson r'),hovertemplate='%{x}<br>%{y}<br>r=%{z:.3f}<extra></extra>'))
+    f.update_layout(height=max(430,28*len(names)+160),xaxis_title='Feature',yaxis_title='Feature')
+    return f
+
+
+def cluster_pca_3d_figure(embedding3,labels,variance,event_ids=None):
+    import pandas as pd
+    e=np.asarray(embedding3,float);lab=np.asarray(labels,int)
+    data=pd.DataFrame({'PC1':e[:,0],'PC2':e[:,1],'PC3':e[:,2],'Cluster':lab.astype(str)})
+    if event_ids is not None:data['Event ID']=np.asarray(event_ids)
+    hover=['Event ID'] if 'Event ID' in data else None
+    f=px.scatter_3d(data,x='PC1',y='PC2',z='PC3',color='Cluster',hover_data=hover,opacity=.65,color_discrete_sequence=PALETTE)
+    v=list(variance)+[np.nan]*3
+    f.update_layout(scene=dict(xaxis_title=f'PC1 ({100*v[0]:.1f}%)',yaxis_title=f'PC2 ({100*v[1]:.1f}%)',zaxis_title=f'PC3 ({100*v[2]:.1f}%)'),height=620)
+    return f
+
+
+def dendrogram_figure(linkage_matrix,k=None,p=50):
+    """Truncated Ward dendrogram; useful for visualising the hierarchy without thousands of leaves."""
+    from scipy.cluster.hierarchy import dendrogram
+    z=np.asarray(linkage_matrix,float)
+    threshold=None
+    if k is not None and len(z)>=k:
+        # k clusters exist immediately before the k-1 largest inter-group merges.
+        lo=z[-int(k),2] if int(k)<=len(z) else z[0,2]
+        hi=z[-int(k)+1,2] if int(k)>1 else z[-1,2]
+        threshold=float((lo+hi)/2)
+    d=dendrogram(z,truncate_mode='lastp',p=min(int(p),len(z)+1),show_leaf_counts=True,no_plot=True,
+                 color_threshold=threshold,above_threshold_color='#666666')
+    f=go.Figure()
+    # scipy coordinates use leaf locations 5, 15, 25, ...
+    for xs,ys,color in zip(d['icoord'],d['dcoord'],d['color_list']):
+        f.add_trace(go.Scatter(x=xs,y=ys,mode='lines',line=dict(width=1.2),showlegend=False,hoverinfo='skip'))
+    f.update_layout(xaxis_title='Truncated leaves / merged groups',yaxis_title='Ward linkage distance',height=440)
+    f.update_xaxes(showticklabels=False)
+    return f
+
+
+def member_profile_figure_hart(profiles,labels,centers,group,limit=80):
+    """Hart-style cluster panel: member traces + 10–90% envelope + representative mean."""
+    phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1]
+    members=np.flatnonzero(np.asarray(labels)==group);p=np.asarray(profiles)[members];rng=np.random.default_rng(42)
+    chosen=np.sort(rng.choice(members,min(limit,len(members)),replace=False));lo,hi=np.percentile(p,[10,90],axis=0)
+    f=go.Figure()
+    f.add_trace(go.Scatter(x=phase,y=lo,line=dict(width=0),showlegend=False,hoverinfo='skip'))
+    f.add_trace(go.Scatter(x=phase,y=hi,fill='tonexty',line=dict(width=0),opacity=.12,name='10–90% member range',hoverinfo='skip'))
+    for pos in chosen:
+        f.add_trace(go.Scatter(x=phase,y=profiles[pos],mode='lines',line=dict(color='rgba(90,90,90,0.10)',width=.7),showlegend=False,hoverinfo='skip'))
+    f.add_trace(go.Scatter(x=phase,y=centers[group],mode='lines',line=dict(color='#D62728',width=2.4),name='Mean representative'))
+    f.update_layout(title=f'Cluster {group} · n={len(members)}',xaxis_title='Fraction of event duration',yaxis_title='Blockade (nA)',height=310)
+    return f
+
+
+def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,source='Selected fits',method='PCA + agglomerative',dendrogram_p=50):
+    """Export the main and supplementary-style DNA clustering figures as separate files.
+
+    The layouts are inspired by the analysis sequence in Hart et al. (PCA clustering,
+    event-family profiles, centroid overlay, scree, elbow/silhouette and dendrogram),
+    but are generated directly from the user's data and this app's feature model.
+    """
+    import io,json,zipfile,math
+    import pandas as pd
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from scipy.cluster.hierarchy import dendrogram
+
+    emb=np.asarray(info['embedding']);emb3=info.get('embedding3');profiles=np.asarray(info['profiles']);labels=np.asarray(info['labels']);centers=np.asarray(info['centers'])
+    phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1];k=len(centers);variance=np.asarray(info.get('pca_variance',[]),float)
+    out=io.BytesIO()
+    rc={'font.family':'sans-serif','font.size':9,'axes.linewidth':.8,'svg.fonttype':'none','pdf.fonttype':42,'xtick.direction':'out','ytick.direction':'out'}
+    with plt.rc_context(rc),zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+        def save(fig,stem):
+            for ext in ['pdf','svg','png']:
+                b=io.BytesIO();fig.savefig(b,format=ext,dpi=600,facecolor='white',bbox_inches='tight');z.writestr(f'{stem}.{ext}',b.getvalue())
+            plt.close(fig)
+
+        # Main-style PCA cluster map.
+        fig,ax=plt.subplots(figsize=(6.2,4.6),layout='constrained')
+        for j in range(k):
+            pts=emb[labels==j];ax.scatter(pts[:,0],pts[:,1],s=9,alpha=.55,edgecolors='none',color=PALETTE[j%len(PALETTE)],label=f'Cluster {j} (n={len(pts)})')
+            poly=hull_vertices(pts)
+            if poly is not None:
+                ax.fill(poly[:,0],poly[:,1],alpha=.09,color=PALETTE[j%len(PALETTE)]);closed=np.vstack([poly,poly[0]]);ax.plot(closed[:,0],closed[:,1],lw=.8,color=PALETTE[j%len(PALETTE)])
+            ax.scatter(*pts.mean(axis=0),marker='x',color='black',s=35,lw=1.2)
+        ax.set_xlabel(f'PC1 ({100*variance[0]:.1f}% variance)' if len(variance)>0 else 'PC1');ax.set_ylabel(f'PC2 ({100*variance[1]:.1f}% variance)' if len(variance)>1 else 'PC2')
+        ax.legend(frameon=False,fontsize=8);save(fig,'main_pca_clusters')
+
+        # Main-style cluster waveform panels.
+        cols=3;rows=math.ceil(k/cols);fig,axes=plt.subplots(rows,cols,figsize=(10,3.1*rows),squeeze=False,layout='constrained')
+        low,high=float(profiles.min()),float(profiles.max());pad=max(.05,.06*(high-low));rng=np.random.default_rng(42)
+        for j in range(rows*cols):
+            ax=axes.flat[j]
+            if j>=k:ax.axis('off');continue
+            ids=np.flatnonzero(labels==j);sample=np.sort(rng.choice(ids,min(100,len(ids)),replace=False));p=profiles[ids];lo,hi=np.percentile(p,[10,90],axis=0)
+            ax.fill_between(phase,lo,hi,color=PALETTE[j%len(PALETTE)],alpha=.12)
+            for pos in sample:ax.plot(phase,profiles[pos],color='0.45',alpha=.07,lw=.45)
+            ax.plot(phase,centers[j],color='#D62728',lw=1.7);ax.set_title(f'Cluster {j} (n={len(ids)})');ax.set_xlabel('Fraction of event duration');ax.set_ylabel('Blockade (nA)');ax.set_ylim(low-pad,high+pad)
+        save(fig,'main_cluster_profiles')
+
+        fig,ax=plt.subplots(figsize=(6.2,4.3),layout='constrained')
+        for j,c in enumerate(centers):ax.plot(phase,c,lw=1.7,color=PALETTE[j%len(PALETTE)],label=f'Cluster {j}')
+        ax.set_xlabel('Fraction of event duration');ax.set_ylabel('Blockade (nA)');ax.legend(frameon=False);save(fig,'main_representative_overlay')
+
+        # Supplementary scree plot.
+        scree=100*np.asarray(info.get('scree',[]));cum=np.cumsum(scree);pcs=np.arange(1,len(scree)+1)
+        fig,ax=plt.subplots(figsize=(5.5,4.1),layout='constrained');ax.plot(pcs,scree,'o-',lw=1.2,label='Explained variance');ax.set_xlabel('Principal component');ax.set_ylabel('Explained variance (%)')
+        ax2=ax.twinx();ax2.plot(pcs,cum,'s--',lw=1.0,label='Cumulative');ax2.set_ylabel('Cumulative variance (%)');ax2.set_ylim(0,105);save(fig,'supp_scree')
+
+        # Supplementary elbow + silhouette.
+        if k_scan:
+            d=pd.DataFrame(k_scan['table']);fig,ax=plt.subplots(figsize=(5.7,4.1),layout='constrained');ax.plot(d.k,d.dispersion,'o-',lw=1.2);ax.set_xlabel('Number of clusters, k');ax.set_ylabel('Within-cluster dispersion')
+            ax2=ax.twinx();ax2.plot(d.k,d.silhouette,'s--',lw=1.1);ax2.set_ylabel('Silhouette score');ax.axvline(k_scan['elbow_k'],ls=':',lw=1);ax2.axvline(k_scan['silhouette_k'],ls='--',lw=1);save(fig,'supp_elbow_silhouette')
+            z.writestr('k_diagnostics.csv',d.to_csv(index=False))
+
+        # Supplementary 3-PC view if possible.
+        if emb3 is not None:
+            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+            fig=plt.figure(figsize=(6,5));ax=fig.add_subplot(111,projection='3d')
+            for j in range(k):
+                pts=np.asarray(emb3)[labels==j];ax.scatter(pts[:,0],pts[:,1],pts[:,2],s=6,alpha=.45,color=PALETTE[j%len(PALETTE)],label=f'Cluster {j}')
+            ax.set_xlabel('PC1');ax.set_ylabel('PC2');ax.set_zlabel('PC3');ax.legend(frameon=False,fontsize=7);save(fig,'supp_pca_3d')
+
+        # Supplementary agglomerative dendrogram.
+        if info.get('linkage_matrix') is not None:
+            fig,ax=plt.subplots(figsize=(8,4.2),layout='constrained');dendrogram(np.asarray(info['linkage_matrix']),truncate_mode='lastp',p=min(int(dendrogram_p),len(labels)),show_leaf_counts=True,ax=ax)
+            ax.set_xlabel('Truncated leaves / merged groups');ax.set_ylabel('Ward linkage distance');save(fig,'supp_dendrogram')
+
+        z.writestr('cluster_features.csv',feature_table.to_csv(index=False));z.writestr('cluster_summary.csv',cluster_summary.to_csv(index=False))
+        z.writestr('pca_coordinates.csv',pd.DataFrame({'event_id':event_ids,'cluster':labels,'PC1':emb[:,0],'PC2':emb[:,1]}).to_csv(index=False))
+        z.writestr('representative_profiles.csv',pd.DataFrame([{'cluster':j,'phase':float(t),'blockade_nA':float(v)} for j,c in enumerate(centers) for t,v in zip(phase,c)]).to_csv(index=False))
+        z.writestr('README.txt',('Hart-style DNA clustering export generated from the current recording. Main-style outputs: PCA cluster map, per-cluster member/representative profiles, and representative overlay. Supplementary-style outputs: scree plot, elbow-silhouette scan, optional 3-PC view, and Ward dendrogram for agglomerative clustering. These are analysis analogues, not reproductions of published artwork. Cluster labels denote signal families only; physical/topological assignments require independent interpretation.'))
+        z.writestr('settings.json',json.dumps({'source':source,'method':method,'n_components':info.get('n_components'),'silhouette':info.get('silhouette'),'calinski_harabasz':info.get('calinski_harabasz'),'davies_bouldin':info.get('davies_bouldin')},indent=2))
+    return out.getvalue()

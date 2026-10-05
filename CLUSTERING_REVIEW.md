@@ -1,3 +1,13 @@
+# 0.7.1 critical clustering correction
+
+Version 0.7.0 allowed a measured temporal-centroid descriptor to be formed from signed blockade samples. Baseline noise can make some blockade samples negative; if positive and negative samples nearly cancel, the centroid denominator becomes very small and the resulting value can lie far outside its physically meaningful 0–1 range. A handful of such events can dominate ordinary PCA variance, produce PC1≈100%, and be isolated as clusters of only one or a few events. Those solutions are numerical artefacts and must not be interpreted physically.
+
+Version 0.7.1 computes temporal centroid from positive measured blockade mass only and constrains it to [0,1]. The primary clustering vector is reduced to five deliberately complementary descriptors: log10 duration, log10 positive measured mean blockade, bounded fold contrast `(deepest-shallowest)/(deepest+shallowest)`, deepest-state occupancy, and the positive-blockade temporal centroid. Raw deep/shallow ratio, resolved shape complexity, ECD, level count and transition descriptors remain available for post-cluster interpretation.
+
+All retained PCA components are used for Ward or k-means clustering. With every retained component included, PCA is only an orthogonal rotation of the safeguarded robust-scaled feature space; no information is discarded according to an arbitrary PC count. PC1–PC2 remains a visual projection only.
+
+Synthetic descriptor tests and a 657-event LiCl fitting export smoke test were run locally. On that real export the five retained PCs explained approximately 47.8%, 31.5%, 10.9%, 7.4%, and 2.3% of scaled-feature variance; no PC1≈100% blow-up occurred. These numbers validate numerical behaviour only, not biological cluster identity.
+
 # 0.7.0 clustering model note
 
 The primary clustering representation is deliberately frozen to six physically interpretable DNA descriptors rather than a broad feature library. A stable deep/shallow ratio is required; events whose shallowest resolved blockade is not above the local robust noise scale for multilevel events remain auditable but are excluded from this model. This is an unsupervised signal-family model, not a validated topology classifier. Cluster number remains a user decision informed by elbow/silhouette diagnostics and waveform/physical interpretation.

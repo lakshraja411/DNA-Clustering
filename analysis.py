@@ -1,5 +1,5 @@
 """Nanopore Shape Lab 0.4: explicit signal processing and lossless event subsets."""
-RELEASE_VERSION='0.7.0'
+RELEASE_VERSION='0.7.1'
 from dataclasses import dataclass
 import io, json, re, zipfile
 import numpy as np
@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.7.0'
+VERSION='0.7.1'
 @dataclass
 class Event:
     index:int

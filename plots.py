@@ -1,4 +1,4 @@
-RELEASE_VERSION='0.7.0'
+RELEASE_VERSION='0.7.1'
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -336,18 +336,19 @@ def blockade_dwell_figure(table,blockade_col='clustering_measured_mean_blockade_
     return f
 
 
-def fold_state_figure(table,ratio_col='clustering_deep_to_shallow_ratio',occupancy_col='clustering_deepest_plateau_fraction'):
-    """Physical fold-state map: relative deep-state amplitude versus occupancy."""
-    need=['cluster',ratio_col,occupancy_col]
+def fold_state_figure(table,contrast_col='clustering_fold_contrast',occupancy_col='clustering_deepest_plateau_fraction'):
+    """Physical fold-state map: bounded relative level contrast versus occupancy."""
+    need=['cluster',contrast_col,occupancy_col]
     if any(c not in table for c in need):return go.Figure()
-    d=table[need+([c for c in ['event_index','duration_ms','clustering_resolved_levels'] if c in table])].dropna().copy()
-    d=d[np.isfinite(d[ratio_col])&np.isfinite(d[occupancy_col])&(d[ratio_col]>=1)]
+    d=table[need+([c for c in ['event_index','duration_ms','clustering_resolved_levels','clustering_deep_to_shallow_ratio'] if c in table])].dropna().copy()
+    d=d[np.isfinite(d[contrast_col])&np.isfinite(d[occupancy_col])&(d[contrast_col]>=0)&(d[contrast_col]<1)]
     d['Cluster']=d['cluster'].astype(str)
-    f=px.scatter(d,x=occupancy_col,y=ratio_col,color='Cluster',opacity=.55,
-                 hover_data=[c for c in ['event_index','duration_ms','clustering_resolved_levels'] if c in d],
-                 labels={occupancy_col:'Fraction of analysed duration in deepest state',ratio_col:'Deep / shallow resolved blockade ratio'},
+    f=px.scatter(d,x=occupancy_col,y=contrast_col,color='Cluster',opacity=.55,
+                 hover_data=[c for c in ['event_index','duration_ms','clustering_resolved_levels','clustering_deep_to_shallow_ratio'] if c in d],
+                 labels={occupancy_col:'Fraction of analysed duration in deepest state',contrast_col:'Fold contrast  (deep − shallow)/(deep + shallow)'},
                  color_discrete_sequence=PALETTE)
-    f.add_hline(y=1,line_dash='dot',line_width=1)
+    f.add_hline(y=0,line_dash='dot',line_width=1)
+    f.update_yaxes(range=[-0.02,1.02])
     f.update_layout(height=450)
     return f
 
@@ -396,7 +397,7 @@ def physical_feature_distributions_figure(table):
     specs=[
         ('duration_ms','Dwell time (ms)'),
         ('clustering_measured_mean_blockade_nA','Measured mean blockade (nA)'),
-        ('clustering_deep_to_shallow_ratio','Deep / shallow blockade ratio'),
+        ('clustering_fold_contrast','Fold contrast'),
         ('clustering_ecd_nA_ms','ECD (nA·ms)'),
     ]
     f=make_subplots(rows=2,cols=2,subplot_titles=[b for _,b in specs])
@@ -474,7 +475,7 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         # Main physical feature distributions.
         dist_fields=[('duration_ms','Dwell time (ms)'),
                      ('clustering_measured_mean_blockade_nA','Measured mean blockade (nA)'),
-                     ('clustering_deep_to_shallow_ratio','Deep / shallow blockade ratio'),
+                     ('clustering_fold_contrast','Fold contrast'),
                      ('clustering_ecd_nA_ms','ECD (nA·ms)')]
         fig,axes=plt.subplots(2,2,figsize=(9,6.5),layout='constrained')
         for ax,(field,label) in zip(axes.flat,dist_fields):

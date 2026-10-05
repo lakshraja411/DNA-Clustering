@@ -6,7 +6,7 @@ they cannot be resolved under the declared amplitude/noise criterion, and platea
 persist for the declared minimum time.  The original trace, fit and event boundaries are
 never modified.
 """
-RELEASE_VERSION='0.7.0'
+RELEASE_VERSION='0.7.1'
 import numpy as np
 import pandas as pd
 from analysis import mask
@@ -14,11 +14,13 @@ from analysis import mask
 PHYSICAL_DESCRIPTIONS={
  'duration_ms':'Detected event end minus start (ms). Kinetic descriptor; total detected duration is preserved even when short edge plateaus are omitted.',
  'measured_mean_blockade_nA':'Time-averaged measured blockade over the detected event, obtained from measured ECD divided by total event duration (nA).',
- 'deep_to_shallow_ratio':'Deepest retained resolved plateau divided by the shallowest retained resolved plateau. Equal to 1 for a one-level event; requires the shallow level to be resolved above local noise.',
- 'log10_deep_to_shallow_ratio':'Base-10 logarithm of the deep-to-shallow plateau ratio. Used for clustering to reduce the leverage of large ratios.',
- 'measured_temporal_centroid':'Blockade-area centre calculated directly from the measured trace in normalised event time. <0.5 means measured blockade is weighted earlier; >0.5 means later.',
- 'resolved_shape_complexity':'Duration-weighted SD of resolved plateau heights divided by their duration-weighted mean. Zero for a perfectly one-level resolved event.',
- 'log10_duration_ms':'Base-10 logarithm of detected event duration in ms. Used for clustering so long dwell-time tails do not dominate the PCA scale.',
+ 'deep_to_shallow_ratio':'Deepest retained resolved plateau divided by the shallowest retained resolved plateau. Equal to 1 for a one-level event; retained for physical interpretation, not used directly in the primary clustering space.',
+ 'fold_contrast':'Bounded relative level contrast (deepest − shallowest)/(deepest + shallowest). Zero for a one-level event and approaches 1 only for very large level contrast.',
+ 'log10_deep_to_shallow_ratio':'Base-10 logarithm of the deep-to-shallow plateau ratio; retained for audit/backward compatibility.',
+ 'measured_temporal_centroid':'Positive-blockade temporal centroid calculated directly from the measured trace in normalised event time. It is constrained to 0–1; <0.5 means blockade is weighted earlier and >0.5 means later.',
+ 'resolved_shape_complexity':'Duration-weighted SD of resolved plateau heights divided by their duration-weighted mean. Retained for interpretation, not used in the primary clustering space.',
+ 'log10_duration_ms':'Base-10 logarithm of detected event duration in ms. Used for clustering so long dwell-time tails do not dominate the feature geometry.',
+ 'log10_measured_mean_blockade_nA':'Base-10 logarithm of the positive measured mean blockade (nA). Used for clustering to reduce leverage of rare very deep events.',
  'resolved_weighted_mean_nA':'Duration-weighted mean blockade of the retained resolved plateaus (nA). This is the typical sustained blockade state after level QC.',
  'resolved_weighted_mean_ratio':'Duration-weighted resolved blockade divided by the user-supplied condition-specific single-file reference.',
  'deepest_plateau_nA':'Deepest sustained resolved plateau blockade (nA), excluding isolated sample maxima.',
@@ -54,8 +56,15 @@ def _measured_event_moments(e,m):
     samples=b[m]
     mean=float(np.mean(samples)) if len(samples) else np.nan
     tau_samples=(e.time[m]-e.bounds[0])/duration if duration>0 else np.zeros_like(samples)
-    sample_mass=float(np.sum(samples))
-    centroid=float(np.sum(tau_samples*samples)/sample_mass) if sample_mass>1e-15 else .5
+    # Temporal centroid must behave like a centre of mass. Measured blockade can
+    # contain small negative samples from baseline noise; using signed samples lets
+    # positive/negative values cancel and can drive the denominator arbitrarily close
+    # to zero, producing impossible centroids far outside [0, 1]. Use only positive
+    # blockade mass for this descriptor. The measured trace itself is not modified.
+    positive_mass=np.clip(samples,0.,None)
+    sample_mass=float(np.sum(positive_mass))
+    centroid=float(np.sum(tau_samples*positive_mass)/sample_mass) if sample_mass>1e-15 else np.nan
+    if np.isfinite(centroid): centroid=float(np.clip(centroid,0.,1.))
     return float(ecd),float(mean),float(centroid)
 
 
@@ -179,13 +188,20 @@ def level_features(events,source='Selected fits',min_duration_us=25.,min_height_
             one_level=len(resolved)==1
             ratio_ok=bool((one_level or shallowest>ratio_floor) and deepest>0 and weighted_mean>1e-12 and shallowest>0)
             deep_ratio=1.0 if one_level and deepest>0 else (float(deepest/shallowest) if ratio_ok else np.nan)
+            # Bounded monotonic version of the deep/shallow ratio. For positive
+            # levels it lives in [0,1), so one unusual shallow denominator cannot
+            # create enormous PCA leverage. r=1 -> 0, r=2 -> 1/3, r=3 -> 1/2.
+            fold_contrast=0.0 if one_level and deepest>0 else (float((deepest-shallowest)/(deepest+shallowest)) if ratio_ok and (deepest+shallowest)>1e-12 else np.nan)
             shape_complexity=float(weighted_std/weighted_mean) if weighted_mean>1e-12 else np.nan
+            log_mean=float(np.log10(measured_mean)) if np.isfinite(measured_mean) and measured_mean>0 else np.nan
 
             row.update(
                 measured_mean_blockade_nA=measured_mean,
+                log10_measured_mean_blockade_nA=log_mean,
                 resolved_weighted_mean_nA=weighted_mean,
                 deepest_plateau_nA=deepest,
                 deep_to_shallow_ratio=deep_ratio,
+                fold_contrast=fold_contrast,
                 log10_deep_to_shallow_ratio=float(np.log10(deep_ratio)) if ratio_ok else np.nan,
                 resolved_blockade_range_nA=span,
                 resolved_weighted_std_nA=weighted_std,
@@ -201,10 +217,23 @@ def level_features(events,source='Selected fits',min_duration_us=25.,min_height_
                 duration_ms=duration*1000,
                 log10_duration_ms=float(np.log10(duration*1000.)),
                 physical_eligible=True)
-            if ratio_ok:
+            # Primary clustering descriptors have explicit physical validity bounds.
+            # Mean blockade must exceed the local robust noise estimate, while fold
+            # contrast, occupancy and temporal centroid are bounded by construction.
+            cluster_ok=bool(
+                ratio_ok and np.isfinite(log_mean) and measured_mean>max(noise,1e-12) and
+                np.isfinite(fold_contrast) and 0.<=fold_contrast<1. and
+                np.isfinite(deepest_fraction) and 0.<deepest_fraction<=1. and
+                np.isfinite(measured_centroid) and 0.<=measured_centroid<=1.
+            )
+            if cluster_ok:
                 row['clustering_eligible']=True
             else:
-                row['clustering_exclusion_reason']=f'shallowest resolved blockade ({shallowest:.4g} nA) is not above the local robust noise scale ({ratio_floor:.4g} nA); deep/shallow ratio is unstable'
+                reasons=[]
+                if not ratio_ok: reasons.append(f'shallowest resolved blockade ({shallowest:.4g} nA) is not above the local robust noise scale ({ratio_floor:.4g} nA)')
+                if not (np.isfinite(log_mean) and measured_mean>max(noise,1e-12)): reasons.append(f'measured mean blockade ({measured_mean:.4g} nA) is not positive and above local noise ({noise:.4g} nA)')
+                if not (np.isfinite(measured_centroid) and 0.<=measured_centroid<=1.): reasons.append('measured temporal centroid is not physically valid')
+                row['clustering_exclusion_reason']='; '.join(reasons) or 'one or more primary clustering descriptors are invalid'
 
             if reference_nA is not None:
                 row['resolved_weighted_mean_ratio']=weighted_mean/reference_nA

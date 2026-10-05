@@ -1,6 +1,6 @@
-# DNA Event Lab 0.7.0 — DNA-conformation clustering model v1
+# DNA Event Lab 0.7.1 — bounded DNA-conformation clustering model
 
-Step 5 now uses a predeclared six-feature clustering vector: `log10_duration_ms`, `measured_mean_blockade_nA`, `log10_deep_to_shallow_ratio`, `deepest_plateau_fraction`, `measured_temporal_centroid`, and `resolved_shape_complexity`. Duration and the within-event deep/shallow ratio are log transformed only for clustering. Mean blockade and temporal centroid are measured directly from the recorded trace; ratio, occupancy and shape complexity come from QC-resolved sustained levels. ECD, integer level count, absolute deepest blockade and transition direction remain post-cluster interpretation/QC variables. Agglomerative Ward and k-means use the same robust-scaled PCA space. Waveform panels show faint real members plus the pointwise median, with no percentile band.
+Step 5 now uses a predeclared five-feature clustering vector: `log10_duration_ms`, `log10_measured_mean_blockade_nA`, `fold_contrast`, `deepest_plateau_fraction`, and `measured_temporal_centroid`. `fold_contrast=(deepest-shallowest)/(deepest+shallowest)` is bounded in [0,1), and the measured temporal centroid is computed from positive blockade mass so it is physically constrained to [0,1]. ECD, integer level count, raw deep/shallow ratio, absolute deepest blockade, transition direction and resolved shape complexity remain post-cluster interpretation/QC variables. All retained PCs are used for Ward/k-means; PCA therefore acts only as an orthogonal rotation of the robust-scaled retained feature space, while PC1-PC2 is a visual projection. Waveform panels show faint real members plus the pointwise median, with no percentile band.
 
 # DNA Event Lab v0.7.0
 

@@ -7,7 +7,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.6.1'
+VERSION='0.6.2'
 @dataclass
 class Event:
     index:int
@@ -296,7 +296,7 @@ def _feature_space(features,n_components=2,correlation_threshold=.98):
     The pruning order follows the supplied feature order, so the user-facing feature list
     should place the preferred physical representative of a correlated family first.
     """
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import RobustScaler
     x=np.asarray(features,float)
     if x.ndim!=2 or len(x)<3:raise ValueError('Feature matrix must contain at least three events.')
     if not np.isfinite(x).all():raise ValueError('All selected clustering features must be finite.')
@@ -312,7 +312,8 @@ def _feature_space(features,n_components=2,correlation_threshold=.98):
                 dropped_correlated.append(int(idx[j]))
         reduced=np.zeros_like(keep);reduced[idx[chosen]]=True;keep=reduced
     if keep.sum()<1:raise ValueError('Need at least one non-constant clustering feature after pruning.')
-    scaler=StandardScaler();scaled=scaler.fit_transform(x[:,keep])
+    # Median/IQR scaling reduces the leverage of long-tailed DNA-event features.
+    scaler=RobustScaler(quantile_range=(25.,75.));scaled=scaler.fit_transform(x[:,keep])
     full=PCA().fit(scaled);max_nc=min(scaled.shape[1],len(scaled)-1)
     nc=max(1,min(int(n_components or 2),max_nc))
     transformed=full.transform(scaled);coords=transformed[:,:nc]
@@ -413,8 +414,9 @@ def cluster_count_diagnostics(features,method='PCA + agglomerative',n_components
 
 def _ordered_feature_result(space,profiles,k,method,random_state=42):
     coords=space['coords'];labels,linkage_matrix,pca_centers=_cluster_coords(coords,k,method,random_state)
-    raw_centers=np.array([profiles[labels==j].mean(axis=0) for j in range(k)])
-    # Stable display IDs: shallowest mean waveform becomes Cluster 0.
+    # Representative waveform = pointwise median of every duration-normalised member profile.
+    raw_centers=np.array([np.median(profiles[labels==j],axis=0) for j in range(k)])
+    # Stable display IDs: shallowest median waveform becomes Cluster 0.
     order=np.argsort(raw_centers.mean(axis=1));remap=np.empty(k,int);remap[order]=np.arange(k)
     labels=remap[labels];centers=raw_centers[order]
     if pca_centers is not None:pca_centers=pca_centers[order]
@@ -426,17 +428,20 @@ def _ordered_feature_result(space,profiles,k,method,random_state=42):
     full=space['pca'];scaler=space['scaler'];full_coords=space['full_coords']
     embedding=full_coords[:,:2] if full_coords.shape[1]>=2 else np.c_[full_coords[:,0],np.zeros(len(full_coords))]
     embedding3=full_coords[:,:3] if full_coords.shape[1]>=3 else None
+    center=np.asarray(getattr(scaler,'center_',np.zeros(space['scaled'].shape[1])),float)
+    scale=np.asarray(getattr(scaler,'scale_',np.ones(space['scaled'].shape[1])),float)
     return dict(labels=labels,centers=centers,profiles=np.asarray(profiles,float),silhouette=sil,calinski_harabasz=ch,davies_bouldin=db,ari=ari,
        embedding=embedding,embedding3=embedding3,pca_variance=full.explained_variance_ratio_[:min(3,len(full.explained_variance_ratio_))].tolist(),
        scree=full.explained_variance_ratio_.tolist(),cumulative=np.cumsum(full.explained_variance_ratio_).tolist(),
        loadings=full.components_[:space['n_components']].tolist(),feature_keep_mask=space['keep'].tolist(),
-       feature_mean=scaler.mean_.tolist(),feature_scale=scaler.scale_.tolist(),n_components=space['n_components'],dispersion=dispersion,
+       feature_center=center.tolist(),feature_mean=center.tolist(),feature_scale=scale.tolist(),n_components=space['n_components'],dispersion=dispersion,
        linkage_matrix=linkage_matrix,pca_centers=pca_centers,dropped_constant=space['dropped_constant'],dropped_correlated=space['dropped_correlated'],
-       center_note='Mean duration-normalised waveforms of feature-cluster members; not reconstructed PCA centroids.',metric='Euclidean in standardised retained PCA space')
+       center_note='Pointwise median duration-normalised waveforms of feature-cluster members; not reconstructed PCA centroids.',
+       metric='Euclidean in robust-scaled retained PCA space')
 
 
 def cluster_features(features,profiles,k,n_components=2,method='PCA + agglomerative',correlation_threshold=.98):
-    """Cluster DNA event features after constant/correlation pruning, z-scoring and PCA."""
+    """Cluster DNA event features after constant/correlation pruning, robust scaling and PCA."""
     space=_feature_space(features,n_components=n_components,correlation_threshold=correlation_threshold)
     return _ordered_feature_result(space,profiles,k,method)
 

@@ -14,7 +14,7 @@ if _MISSING_ANALYSIS:
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,cluster_features,feature_space_diagnostics,cluster_count_diagnostics,safe_settings
 from physical import level_features,PHYSICAL_DESCRIPTIONS
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
-from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive
+from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
 st.title('DNA Event Lab')
@@ -97,7 +97,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.6.1','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.6.2','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},
       'refinement_history':S.get('refinement_history',[]),'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
@@ -426,15 +426,15 @@ elif step.startswith('4'):
     if S.get('figures') and S.figures[:6]==(p['fingerprint'],refhash,source,height,logx,bins):st.download_button('Save PDF, SVG and 600 dpi PNG figures',S.figures[6],'current_duration_figures.zip','application/zip')
     next_step('5 · Cluster events')
 elif step.startswith('5'):
-    st.header('5 · DNA event-family clustering')
-    st.write('This step follows a Hart-style analysis sequence: define a physically interpretable DNA feature set, inspect feature redundancy and the PCA scree plot, compare cluster counts with elbow + silhouette diagnostics, then cluster with either Ward agglomerative clustering or k-means. The resulting groups are signal families, not automatic topology labels.')
+    st.header('5 · Cluster the DNA events')
+    st.write('This version deliberately keeps the clustering model small and physics-led. Five complementary continuous descriptors form the PCA space; richer resolved-level quantities are calculated separately to explain the clusters afterwards. This avoids asking PCA to encode every piece of DNA physics at once.')
     cfg=S.get('cluster_config',{})
 
     source_options=['Selected fits','Measured trace']
     source=st.radio('Signal used for resolved-level amplitudes',source_options,index=source_options.index(cfg.get('source','Selected fits')) if cfg.get('source','Selected fits') in source_options else 0,horizontal=True)
     methods=['PCA + agglomerative (Ward)','PCA + k-means']
     previous=cfg.get('algorithm',methods[0]);algorithm=st.selectbox('Clustering algorithm',methods,index=methods.index(previous) if previous in methods else 0)
-    st.caption('Both algorithms use the same DNA features, z-score scaling and PCA coordinates. Ward agglomerative clustering can follow non-spherical hierarchical structure; k-means favours compact centroid-based groups. Compare both rather than assuming one is universally correct.')
+    st.caption('Both choices use exactly the same DNA features, robust median/IQR scaling and PCA coordinates. Only the final grouping rule changes.')
 
     previous_params=cfg.get('physical_params',{})
     with st.expander('1 · Resolve the DNA plateau structure',expanded=True):
@@ -444,13 +444,13 @@ elif step.startswith('5'):
         noise_mult=c3.number_input('Noise multiplier for level merging',min_value=0.,value=float(previous_params.get('noise_multiplier',3.)))
         st.caption('Adjacent fitted levels merge when their difference is ≤ max(minimum level difference, noise multiplier × robust noise scale). A retained plateau must also last at least max(the selected minimum duration, 3 sampling intervals).')
         omit_edges=st.checkbox('Omit short boundary plateaus from physical features',value=previous_params.get('omit_short_boundaries',True))
-        st.caption('Only the first and last short merged plateaus may be omitted. Short internal plateaus make the event unresolved instead of silently changing its internal structure.')
-        use_ref=st.checkbox('Use a calibrated single-file blockade reference',value=previous_params.get('reference_nA') is not None)
+        st.caption('Only the first and last short merged plateaus may be omitted. Short internal plateaus keep the event out of the physical feature model rather than silently changing its structure.')
+        use_ref=st.checkbox('Use a calibrated single-file blockade reference for interpretation',value=previous_params.get('reference_nA') is not None)
         reference=st.number_input('Single-file reference blockade ΔI₀ (nA)',min_value=.000001,value=float(previous_params.get('reference_nA') or 1.),format='%.4f') if use_ref else None
-        use_deep=st.checkbox('Use a deeper-blockade threshold for occupancy',value=previous_params.get('deep_threshold_nA') is not None)
+        use_deep=st.checkbox('Use a deeper-blockade threshold for interpretation',value=previous_params.get('deep_threshold_nA') is not None)
         threshold=st.number_input('Deeper-blockade threshold (nA)',min_value=.000001,value=float(previous_params.get('deep_threshold_nA') or 1.5),format='%.4f') if use_deep else None
-        if use_ref:st.caption('When a condition-specific ΔI₀ is supplied, amplitude descriptors are available in single-file-equivalent units. This is useful for fold-like blockade comparisons but does not itself prove strand number.')
-        if use_deep:st.caption('Deep-time fraction reports how much of the resolved event lies above this threshold. Events with a level within one merge tolerance of the threshold are flagged as threshold-sensitive.')
+        if use_ref:st.caption('The reference creates single-file-equivalent blockade ratios for interpretation. It does not by itself prove strand number or topology.')
+        if use_deep:st.caption('The threshold creates a deep-state occupancy descriptor. Events close to the resolution threshold are flagged as threshold-sensitive.')
     physical_params=dict(min_duration_us=min_us,min_height_nA=min_height,noise_multiplier=noise_mult,reference_nA=reference,deep_threshold_nA=threshold,omit_short_boundaries=omit_edges)
 
     physical_audit,physical_sequences=level_features(active,source,**physical_params)
@@ -468,56 +468,49 @@ elif step.startswith('5'):
             for level in audit_levels.itertuples():
                 if level.level_status!='resolved':audit_fig.add_vrect(x0=level.start_from_event_ms,x1=level.start_from_event_ms+level.duration_ms,fillcolor='#e89b35',opacity=.25,line_width=0)
             show(audit_fig,'physical_flagged_trace');st.dataframe(audit_levels,hide_index=True)
-            st.caption('Amber regions failed the declared resolution policy. They are retained in the audit and are not automatically called artefacts.')
+            st.caption('Amber regions failed the declared resolution policy. They remain in the audit and are not automatically called artefacts.')
 
-    amp_mean='resolved_weighted_mean_ratio' if use_ref else 'resolved_weighted_mean_nA'
-    amp_deep='deepest_plateau_ratio' if use_ref else 'deepest_plateau_nA'
-    amp_range='resolved_blockade_range_ratio' if use_ref else 'resolved_blockade_range_nA'
-    amp_std='resolved_weighted_std_ratio' if use_ref else 'resolved_weighted_std_nA'
-    default_fields=['duration_ms',amp_mean,amp_deep,amp_range,'ecd_nA_ms','resolved_levels','deepest_plateau_fraction','deepest_plateau_position','blockade_temporal_centroid','transition_direction','blockade_skewness']
-    if use_deep:default_fields.insert(7,'deep_time_fraction')
-    available_fields=['duration_ms',amp_mean,amp_deep,amp_range,amp_std,'ecd_nA_ms','resolved_levels','deepest_plateau_fraction','deepest_plateau_position','blockade_temporal_centroid','transition_direction','blockade_skewness']+(['deep_time_fraction'] if use_deep else [])
-    previous_fields=[f for f in cfg.get('fields',[]) if f in available_fields]
-    with st.expander('2 · DNA feature set',expanded=True):
-        st.write('The default set deliberately spans different physical questions: kinetics, typical sustained blockade, deepest state, internal level range, integrated charge, number of resolved states, how long/where the deepest state occurs, temporal asymmetry and plateau-height skewness. Wavelet features are not used in the primary model.')
-        fields=st.multiselect('Features used for PCA and clustering',available_fields,default=previous_fields or default_fields,format_func=lambda x:PHYSICAL_DESCRIPTIONS.get(x,x))
-        if fields:st.json({f:PHYSICAL_DESCRIPTIONS[f] for f in fields})
-        st.caption('Resolved weighted mean = Σ(LₖTₖ)/ΣTₖ. ECD is integrated from the measured trace. Near-duplicate selected features (|r| ≥ 0.98) are pruned before PCA so the same physical property is not counted twice.')
+    # Primary clustering coordinates: deliberately small, continuous and complementary.
+    core_fields=['log10_duration_ms','resolved_weighted_mean_nA','deepest_plateau_nA','resolved_weighted_std_nA','blockade_temporal_centroid']
+    with st.expander('2 · Primary DNA clustering feature set',expanded=True):
+        st.markdown('**These five features form the PCA/clustering space:**')
+        for f in core_fields:st.write('• '+PHYSICAL_DESCRIPTIONS[f])
+        st.caption('Why these five? They represent kinetics, typical sustained blockade, maximum sustained occupancy, multilevel heterogeneity and temporal asymmetry. ECD, level count, occupancy and transition descriptors are retained for interpretation rather than being allowed to repeatedly weight the PCA.')
+        st.caption('Dwell time enters PCA as log₁₀(duration/ms). Amplitude quantities remain in nA. All retained features are then scaled by median and interquartile range (RobustScaler), not mean and standard deviation.')
 
-    positions=st.select_slider('Waveform positions used only for the Hart-style member/profile plots',[64,128,256],value=cfg.get('positions',128) if cfg.get('positions',128) in [64,128,256] else 128)
+    positions=st.select_slider('Waveform positions used only for event-family profile plots',[64,128,256],value=cfg.get('positions',128) if cfg.get('positions',128) in [64,128,256] else 128)
     positions_idx=np.flatnonzero(physical_audit.physical_eligible.to_numpy())
     eligible_active=[active[int(i)] for i in positions_idx]
     feat=physical_audit.iloc[positions_idx].reset_index(drop=True)
     table_preview=measured.iloc[positions_idx].reset_index(drop=True)
     if len(eligible_active)<3:st.error('At least three resolved events are required for clustering.');st.stop()
-    if len(fields)<2:st.warning('Select at least two features to build a PCA space.');st.stop()
-    matrix=feat[fields].to_numpy(float)
-    try:space_diag=feature_space_diagnostics(matrix,fields,.98)
+    matrix=feat[core_fields].to_numpy(float)
+    try:space_diag=feature_space_diagnostics(matrix,core_fields,.98)
     except Exception as ex:st.error(str(ex));st.stop()
 
-    with st.expander('3 · Feature QC and PCA scree plot',expanded=True):
-        if len(fields)>1:show(feature_correlation_figure(space_diag['correlation'],[f.replace('_',' ') for f in fields]),'cluster_feature_correlation')
+    with st.expander('3 · Feature QC and PCA dimensionality',expanded=True):
+        show(feature_correlation_figure(space_diag['correlation'],[f.replace('_',' ') for f in core_fields]),'cluster_feature_correlation')
         if space_diag['dropped_constant']:st.warning('Constant features removed: '+', '.join(space_diag['dropped_constant']))
         if space_diag['dropped_correlated']:st.info('Near-duplicate features removed before PCA: '+', '.join(space_diag['dropped_correlated']))
         st.write('Retained for PCA:',', '.join(space_diag['retained_features']))
         show(pca_scree_figure(space_diag['scree']),'cluster_scree_pre')
         scree_table=pd.DataFrame({'PC':np.arange(1,len(space_diag['scree'])+1),'Explained variance':space_diag['scree'],'Cumulative variance':space_diag['cumulative']})
         st.dataframe(scree_table.round(4),hide_index=True)
-        st.caption('Like the NanoBoost supplementary analysis, use the scree plot to judge whether two components are sufficient or whether a third component adds meaningful information. PCA variance is representation of the selected features, not clustering accuracy.')
+        st.caption('The scree plot tells you how many PCA directions are needed to represent these five physical descriptors. Explained variance is not clustering accuracy.')
 
-    max_pc=max(1,min(6,int(space_diag['max_components'])))
+    max_pc=max(1,min(5,int(space_diag['max_components'])))
     if max_pc>=2:
         npc=st.slider('Principal components used for clustering',2,max_pc,min(max(2,int(cfg.get('npc',2))),max_pc))
     else:
         npc=1;st.metric('Principal components used for clustering',1)
     kmax=st.slider('Largest k to include in elbow–silhouette scan',3,10,int(cfg.get('kmax',8)))
 
-    diag_signature=(p['fingerprint'],refhash,source,algorithm,tuple(fields),npc,kmax,positions,json.dumps(physical_params,sort_keys=True))
-    if st.button('Run Hart-style elbow + silhouette scan'):
+    diag_signature=(p['fingerprint'],refhash,source,algorithm,tuple(core_fields),npc,kmax,positions,json.dumps(physical_params,sort_keys=True))
+    if st.button('Run elbow + silhouette scan'):
         try:
             with st.spinner('Testing candidate cluster counts…'):
                 base_method='PCA + agglomerative' if 'agglomerative' in algorithm.lower() else 'PCA + k-means'
-                S.cluster_scan=(diag_signature,cluster_count_diagnostics(matrix,base_method,npc,2,kmax,fields,.98))
+                S.cluster_scan=(diag_signature,cluster_count_diagnostics(matrix,base_method,npc,2,kmax,core_fields,.98))
         except Exception as ex:st.error(str(ex))
     scan=S.get('cluster_scan')
     if scan and scan[0]!=diag_signature:
@@ -528,40 +521,47 @@ elif step.startswith('5'):
             show(k_diagnostics_figure(scan['table'],scan['elbow_k'],scan['silhouette_k']),'cluster_k_diagnostics_pre')
             st.dataframe(pd.DataFrame(scan['table']).round(4),hide_index=True)
             if scan['agreement']:st.success(f'Elbow and silhouette agree on k = {scan["suggested_k"]}.')
-            else:st.warning(f'Elbow suggests k = {scan["elbow_k"]}, while silhouette peaks at k = {scan["silhouette_k"]}. Inspect the PCA groups/member traces rather than forcing an automatic answer.')
-            st.caption('This deliberately mirrors the Hart/NanoBoost logic: elbow and silhouette guide k, but the final choice remains inspectable rather than being hidden behind a weighted score.')
-    else:st.info('Run the elbow + silhouette scan before finalising k. If you skip it, the app will calculate the scan automatically when clustering is run.')
+            else:st.warning(f'Elbow suggests k = {scan["elbow_k"]}, while silhouette peaks at k = {scan["silhouette_k"]}. Inspect the physical plots and event-family traces before deciding.')
+            st.caption('The scan is a diagnostic, not an automatic statement about the number of DNA conformations.')
+    else:
+        st.info('Run the elbow + silhouette scan before finalising k. If you skip it, the app will calculate the scan when clustering is run.')
 
     suggested=int(scan['suggested_k']) if scan else int(cfg.get('k',3));suggested=max(2,min(suggested,kmax))
-    k=st.slider('Number of clusters used for the final grouping',2,kmax,int(cfg.get('k',suggested)) if 2<=int(cfg.get('k',suggested))<=kmax else suggested)
-    S.cluster_config=dict(source=source,algorithm=algorithm,k=k,fields=fields,npc=npc,positions=positions,kmax=kmax,physical_params=physical_params)
-    signature=(p['fingerprint'],refhash,source,algorithm,k,tuple(fields),npc,positions,kmax,json.dumps(physical_params,sort_keys=True))
+    previous_k=int(cfg.get('k',suggested));previous_k=max(2,min(previous_k,kmax))
+    k=st.slider('Number of clusters used for the final grouping',2,kmax,previous_k)
+    S.cluster_config=dict(source=source,algorithm=algorithm,k=k,fields=core_fields,npc=npc,positions=positions,kmax=kmax,physical_params=physical_params)
+    signature=(p['fingerprint'],refhash,source,algorithm,k,tuple(core_fields),npc,positions,kmax,json.dumps(physical_params,sort_keys=True))
 
     if st.button('Run clustering',type='primary'):
         try:
-            with st.spinner('Clustering DNA events and preparing Hart-style diagnostics…'):
+            with st.spinner('Clustering DNA events and preparing physical interpretation…'):
                 current_scan=scan
                 base_method='PCA + agglomerative' if 'agglomerative' in algorithm.lower() else 'PCA + k-means'
-                if current_scan is None:current_scan=cluster_count_diagnostics(matrix,base_method,npc,2,kmax,fields,.98);S.cluster_scan=(diag_signature,current_scan)
+                if current_scan is None:
+                    current_scan=cluster_count_diagnostics(matrix,base_method,npc,2,kmax,core_fields,.98)
+                    S.cluster_scan=(diag_signature,current_scan)
                 excluded=physical_audit.loc[~physical_audit.physical_eligible].copy();sequences=physical_sequences.copy()
                 sig=signal_events(eligible_active,source);_,prof=describe(sig,positions)
                 info=cluster_features(matrix,prof,k,npc,base_method,.98)
                 table=table_preview.copy();table['cluster']=info['labels']
                 for col in feat.columns:
                     if col!='event_index':table['clustering_'+col]=feat[col].to_numpy()
-                retained=[f for f,keep in zip(fields,info.get('feature_keep_mask',[True]*len(fields))) if keep]
-                clustering_meta={'source':source,'method':algorithm,'k':int(k),'selection':'manual after Hart-style elbow/silhouette diagnostics','features':fields,
-                    'pca_components':int(info.get('n_components',npc)),'profile_positions':positions,'k_scan_range':[2,kmax],
-                    'feature_set':'DNA physical + morphology features','physical_settings':physical_params,'excluded_events':len(excluded),
-                    'retained_features':retained,'feature_mean':info.get('feature_mean'),'feature_scale':info.get('feature_scale'),'pca_loadings':info.get('loadings'),
-                    'k_diagnostics':current_scan,'correlation_threshold':.98}
+                retained=[f for f,keep in zip(core_fields,info.get('feature_keep_mask',[True]*len(core_fields))) if keep]
+                clustering_meta={'source':source,'method':algorithm,'k':int(k),'selection':'manual after elbow/silhouette diagnostics',
+                    'features':core_fields,'pca_components':int(info.get('n_components',npc)),'profile_positions':positions,'k_scan_range':[2,kmax],
+                    'feature_set':'five-feature DNA physical core','scaling':'RobustScaler median/IQR','physical_settings':physical_params,
+                    'excluded_events':len(excluded),'retained_features':retained,'feature_center':info.get('feature_center'),
+                    'feature_scale':info.get('feature_scale'),'pca_loadings':info.get('loadings'),'k_diagnostics':current_scan,
+                    'correlation_threshold':.98}
                 S.group={'signature':signature,'table':table,'info':info,'excluded':excluded,'sequences':sequences,'scan':current_scan,'meta':{**meta,'clustering':clustering_meta}}
                 S.pop('prepared',None);S.pop('hart_export',None)
         except Exception as ex:st.error(str(ex))
 
     g=S.get('group')
     if g and g['signature']!=signature:
-        S.pop('group',None);S.pop('prepared',None);S.pop('hart_export',None);st.info('Clustering settings changed. Run clustering again to update the results.');st.stop()
+        S.pop('group',None);S.pop('prepared',None);S.pop('hart_export',None)
+        st.info('Clustering settings changed. Run clustering again to update the results.');st.stop()
+
     if g:
         info=g['info'];table=g['table'];scan=g.get('scan');selected_k=len(np.unique(info['labels']))
         st.success(f'{len(table)} resolved events grouped into {selected_k} signal families using {algorithm}.')
@@ -574,78 +574,124 @@ elif step.startswith('5'):
             with st.expander('Resolved plateau measurements'):
                 st.dataframe(sequences,hide_index=True);st.download_button('Save resolved levels CSV',sequences.to_csv(index=False),'resolved_levels.csv','text/csv')
 
-        st.subheader('Hart-style cluster feature summary')
+        st.subheader('A · Statistical clustering result')
+        embedding=np.asarray(info['embedding']);variance=info.get('pca_variance',[])
+        projection=pd.DataFrame(embedding,columns=['PC1','PC2']);projection['Cluster']=table['cluster'].astype(str).to_numpy()
+        projection['Event ID']=table['event_index'].to_numpy();projection['Duration (ms)']=table['duration_ms'].to_numpy()
+        projection['Measured mean blockade (nA)']=table['mean_blockade_nA'].to_numpy()
+        axis_labels={f'PC{j+1}':f'PC{j+1} ({100*variance[j]:.1f}% variance)' if j<len(variance) else f'PC{j+1}' for j in range(2)}
+        show(cluster_pca_figure(projection,axis_labels,False),'cluster_projection')
+        st.caption(f'No convex-hull shading is used. Each point is one event; the black × is the median position of that group in this displayed plane. Final clustering used {info.get("n_components",npc)} PCA component(s), so PC1–PC2 is only a projection.')
+        st.download_button('Save PC coordinates CSV',projection.to_csv(index=False),'pca_coordinates.csv','text/csv')
+
+        st.subheader('B · Physical interpretation of the signal families')
+        show(blockade_dwell_figure(table),'cluster_blockade_dwell')
+        st.caption('This is the direct DNA-physics view: actual dwell time versus duration-weighted sustained blockade. The x-axis is logarithmic only for display.')
+
+        show(physical_feature_distributions_figure(table),'cluster_physical_distributions')
+        st.caption('These four distributions are shown in their physical units. ECD and several other quantities are interpretation/QC variables; they did not all create the clusters.')
+
+        p1,p2,p3=st.columns(3)
+        with p1:
+            show(level_composition_figure(table),'cluster_level_composition')
+            st.caption('Level count is supporting evidence, not a PCA coordinate: the plot shows what fraction of each cluster contains 1, 2 or ≥3 resolved sustained levels.')
+        with p2:
+            show(occupancy_figure(table),'cluster_deepest_occupancy')
+            st.caption('Deepest-state occupancy asks how much of the analysed event duration is spent in its deepest resolved state.')
+        with p3:
+            show(population_fraction_figure(table),'cluster_population')
+            st.caption('Cluster population is the fraction of all physically eligible events assigned to each signal family.')
+
+        interpretation=[
+            ('duration_ms','Dwell (ms)'),
+            ('resolved_weighted_mean_nA','Weighted blockade (nA)'),
+            ('deepest_plateau_nA','Deepest blockade (nA)'),
+            ('ecd_nA_ms','ECD (nA·ms)'),
+            ('resolved_levels','Resolved levels'),
+            ('resolved_blockade_range_nA','Level range (nA)'),
+            ('deepest_plateau_fraction','Deepest-state fraction'),
+            ('deepest_plateau_position','Deepest-state position'),
+            ('blockade_temporal_centroid','Temporal centroid'),
+            ('transition_direction','Transition direction'),
+        ]
+        if use_deep:interpretation.append(('deep_time_fraction','Deep-threshold fraction'))
         rows=[]
         for cid,sub in table.groupby('cluster',sort=True):
             row={'Cluster':int(cid),'Events':len(sub),'Population (%)':100*len(sub)/len(table)}
-            for f in fields:row[PHYSICAL_DESCRIPTIONS[f].split('.')[0]]=float(sub['clustering_'+f].median())
+            for f,label in interpretation:
+                col='clustering_'+f
+                if col in sub:row[label]=float(sub[col].median())
             rows.append(row)
         hart_summary=pd.DataFrame(rows)
         st.dataframe(hart_summary.round(4),hide_index=True)
-        st.caption('These are cluster medians in the original physical feature units, not inverse-PCA reconstructions. They play the same interpretive role as a centroid-feature table while remaining valid for both agglomerative and k-means clustering.')
-        st.download_button('Save cluster feature summary CSV',hart_summary.to_csv(index=False),'cluster_feature_summary.csv','text/csv')
+        st.caption('These are medians in physical units. They are used to explain the signal families after clustering rather than to force every descriptor into the PCA.')
+        st.download_button('Save physical cluster summary CSV',hart_summary.to_csv(index=False),'cluster_physical_summary.csv','text/csv')
 
-        st.subheader('Main-style PCA cluster map')
-        embedding=np.asarray(info['embedding']);variance=info.get('pca_variance',[])
-        projection=pd.DataFrame(embedding,columns=['PC1','PC2']);projection['Cluster']=table['cluster'].astype(str).to_numpy();projection['Event ID']=table['event_index'].to_numpy();projection['Duration (ms)']=table['duration_ms'].to_numpy();projection['Measured mean blockade (nA)']=table['mean_blockade_nA'].to_numpy()
-        axis_labels={f'PC{j+1}':f'PC{j+1} ({100*variance[j]:.1f}% variance)' if j<len(variance) else f'PC{j+1}' for j in range(2)}
-        outlines=st.checkbox('Show shaded cluster outlines',True)
-        show(cluster_pca_figure(projection,axis_labels,outlines),'cluster_projection')
-        st.caption(f'The displayed PC1–PC2 plane is a projection. Final clustering used {info.get("n_components",npc)} PCA component(s). Convex hulls are visual outlines, not confidence regions or decision boundaries.')
-        st.download_button('Save PC coordinates CSV',projection.to_csv(index=False),'pca_coordinates.csv','text/csv')
-
-        st.subheader('Main-style DNA event-family profiles')
+        st.subheader('C · What do the event families actually look like?')
         columns=st.columns(3)
         for group_id in range(selected_k):
-            with columns[group_id%3]:show(member_profile_figure_hart(info['profiles'],info['labels'],info['centers'],group_id),f'hart_members_{group_id}')
-        st.caption('Grey curves are a deterministic sample of member events, shading is the member 10th–90th percentile envelope, and the red curve is the mean duration-normalised representative. Blockade amplitude is not normalised away.')
-        st.subheader('Representative-profile overlay')
+            with columns[group_id%3]:
+                show(member_profile_figure_hart(info['profiles'],info['labels'],info['centers'],group_id),f'dna_members_{group_id}')
+        st.caption('Grey curves are a deterministic sample of real cluster-member profiles. The red curve is the pointwise median across every member of that cluster. No percentile envelope is drawn, and blockade amplitude is not normalised away.')
+
+        st.write('**Median representative profiles overlaid**')
         show(profile_figure(info['profiles'],info['labels'],info['centers']),'cluster_profiles')
 
         time_examples=representative_time_examples([e for e in active if e.index in set(table.event_index)],info,g['meta']['clustering']['source'])
         with st.expander('Representative real events in actual time (ms)',expanded=True):
-            show(time_example_figure(time_examples),'cluster_actual_time');st.download_button('Save actual-time example curves',time_examples.to_csv(index=False),'actual_time_examples.csv','text/csv')
-            st.caption('One recorded event per cluster is chosen as the event nearest the representative profile. This prevents duration-normalised panels from hiding the real dwell-time scale.')
+            show(time_example_figure(time_examples),'cluster_actual_time')
+            st.download_button('Save actual-time example curves',time_examples.to_csv(index=False),'actual_time_examples.csv','text/csv')
+            st.caption('One genuine recorded event per group is chosen as the event nearest the median representative profile. Its original time axis and detected duration are retained.')
 
-        st.subheader('Supplementary-style clustering diagnostics')
+        st.subheader('D · Supplementary clustering diagnostics')
         c1,c2=st.columns(2)
-        with c1:show(pca_scree_figure(info['scree']),'cluster_scree_result')
+        with c1:
+            show(feature_correlation_figure(space_diag['correlation'],[f.replace('_',' ') for f in core_fields]),'cluster_feature_correlation_result')
         with c2:
-            if scan:show(k_diagnostics_figure(scan['table'],scan['elbow_k'],scan['silhouette_k']),'cluster_k_diagnostics_result')
-        if info.get('embedding3') is not None:
-            with st.expander('3-PC view (analogous to the supplementary n = 3 check)'):
-                show(cluster_pca_3d_figure(info['embedding3'],info['labels'],info.get('pca_variance',[]),table.event_index.to_numpy()),'cluster_pca_3d')
-                st.caption('PC3 is shown even when the final clustering uses only two PCs; in that case it is an exploratory view of whether a third component reveals additional separation.')
-        if info.get('linkage_matrix') is not None:
-            with st.expander('Ward dendrogram (agglomerative clustering)',expanded=True):
-                show(dendrogram_figure(info['linkage_matrix'],selected_k,50),'cluster_dendrogram')
-                st.caption('The dendrogram visualises the full Ward hierarchy but is truncated to the final merged branches so thousands of individual event leaves remain readable.')
+            show(pca_scree_figure(info['scree']),'cluster_scree_result')
+        if scan:
+            show(k_diagnostics_figure(scan['table'],scan['elbow_k'],scan['silhouette_k']),'cluster_k_diagnostics_result')
 
-        if fields and 'loadings' in info:
-            kept=[f for f,keep in zip(fields,info.get('feature_keep_mask',[True]*len(fields))) if keep];loads=np.asarray(info['loadings']);pcs=min(3,len(loads));load_rows=[]
-            for j in range(pcs):
-                var=100*info['scree'][j] if j<len(info.get('scree',[])) else np.nan
-                for name,value in zip(kept,loads[j]):load_rows.append({'Feature':name.replace('_',' ').title(),'Loading':value,'PC':f'PC{j+1} ({var:.1f}%)'})
-            with st.expander('PCA loadings: what drives the separation?'):
+        if info.get('embedding3') is not None:
+            with st.expander('3-PC view'):
+                show(cluster_pca_3d_figure(info['embedding3'],info['labels'],info.get('pca_variance',[]),table.event_index.to_numpy()),'cluster_pca_3d')
+                st.caption('The third component is an exploratory check of structure hidden from the PC1–PC2 projection.')
+
+        if info.get('linkage_matrix') is not None:
+            with st.expander('Ward dendrogram',expanded=False):
+                show(dendrogram_figure(info['linkage_matrix'],selected_k,50),'cluster_dendrogram')
+                st.caption('The dendrogram shows the hierarchical Ward merge structure and is truncated so a large recording remains readable.')
+
+        kept=[f for f,keep in zip(core_fields,info.get('feature_keep_mask',[True]*len(core_fields))) if keep]
+        loads=np.asarray(info.get('loadings',[]));pcs=min(3,len(loads));load_rows=[]
+        for j in range(pcs):
+            var=100*info['scree'][j] if j<len(info.get('scree',[])) else np.nan
+            for name,value in zip(kept,loads[j]):load_rows.append({'Feature':name.replace('_',' ').title(),'Loading':value,'PC':f'PC{j+1} ({var:.1f}%)'})
+        if load_rows:
+            with st.expander('PCA loadings: what constructs each PCA direction?'):
                 show(px.bar(pd.DataFrame(load_rows),x='Loading',y='Feature',color='PC',barmode='group',orientation='h'),'pca_loadings')
-                st.caption('Loadings describe which standardised physical descriptors construct each PCA direction. Their signs may flip globally; relative magnitudes/signs are what matter.')
+                st.caption('Loadings describe the construction of PCA coordinates from the robust-scaled core features. The overall sign of a principal component can flip without changing its meaning.')
 
         with st.expander('Numerical diagnostics'):
             st.write('Silhouette:',info.get('silhouette'));st.write('Calinski–Harabasz:',info.get('calinski_harabasz'));st.write('Davies–Bouldin:',info.get('davies_bouldin'))
             if np.isfinite(info.get('ari',np.nan)):st.write('K-means repeat-seed ARI:',info.get('ari'))
+            st.write('Scaling: median / interquartile range (RobustScaler)')
             st.write('PCA components used:',info.get('n_components'));st.write('Cumulative variance in used PCs:',float(np.sum(info.get('scree',[])[:info.get('n_components',0)])))
             if scan:st.write('Elbow suggestion:',scan['elbow_k']);st.write('Silhouette peak:',scan['silhouette_k'])
-            st.caption('These quantify signal geometry, not biological identity. A clean cluster still requires waveform/feature interpretation and replication across recordings.')
+            st.caption('These diagnose signal geometry only. Physical/topological interpretation still comes from the waveform and resolved-level behaviour.')
 
         cluster=st.selectbox('Inspect every event in cluster',sorted(table.cluster.unique()));ids=table.loc[table.cluster==cluster,'event_index'].tolist();eid=st.selectbox('Event in this cluster',ids)
         e=next(e for e in events if e.index==eid);show(trace_figure(e,refs.get(e.index)),'cluster_event')
 
-        if st.button('Prepare cluster profile figures'):S.cluster_figures=(signature,profile_archive(info['profiles'],info['labels'],info['centers']))
-        if S.get('cluster_figures') and S.cluster_figures[0]==signature:st.download_button('Save profile PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_profiles.zip')
-        if st.button('Prepare Hart-style main + supplementary figure pack'):
+        if st.button('Prepare representative profile figures'):
+            S.cluster_figures=(signature,profile_archive(info['profiles'],info['labels'],info['centers']))
+        if S.get('cluster_figures') and S.cluster_figures[0]==signature:
+            st.download_button('Save representative profile PDF, SVG and PNG figures',S.cluster_figures[1],'cluster_profiles.zip')
+
+        if st.button('Prepare main + supplementary DNA clustering figure pack'):
             S.hart_export=(signature,hart_style_archive(info,table['event_index'].to_numpy(),table,hart_summary,scan,source,algorithm))
         if S.get('hart_export') and S.hart_export[0]==signature:
-            st.download_button('Save Hart-style figure pack',S.hart_export[1],'dna_clustering_hart_style_figures.zip','application/zip')
+            st.download_button('Save DNA clustering figure pack',S.hart_export[1],'dna_clustering_figures.zip','application/zip')
         next_step('6 · Save clusters')
 elif step.startswith('6'):
     st.header('6 · Save cluster data')

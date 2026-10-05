@@ -40,13 +40,12 @@ def distribution_figures(df,x,y,logx=False,logy=False,bins=45,color=None):
     return scatter,heat,dropped,h,xe,ye
 
 def profile_figure(profiles,labels,centers,units='nA'):
+    """Overlay only the representative median profile from each feature-space cluster."""
     phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1];f=go.Figure()
-    palette=PALETTE
     for j,c in enumerate(centers):
-        color=palette[j%len(palette)];p=profiles[labels==j];lo,hi=np.percentile(p,[10,90],axis=0)
-        f.add_trace(go.Scatter(x=phase,y=lo,line=dict(width=0),showlegend=False,legendgroup=str(j),hoverinfo='skip'))
-        f.add_trace(go.Scatter(x=phase,y=hi,fill='tonexty',line=dict(width=0),opacity=.12,fillcolor=color,showlegend=False,legendgroup=str(j),hoverinfo='skip'))
-        f.add_trace(go.Scatter(x=phase,y=c,line=dict(color=color,width=2),name=f'Group {j} (n={len(p)})',legendgroup=str(j)))
+        n=int(np.sum(np.asarray(labels)==j))
+        f.add_trace(go.Scatter(x=phase,y=c,line=dict(color=PALETTE[j%len(PALETTE)],width=2.2),
+                               name=f'Cluster {j} (n={n})'))
     f.update_layout(xaxis_title='Fraction of event duration',yaxis_title=f'Profile ({units})',height=420)
     return f
 
@@ -105,7 +104,7 @@ def figure_archive(table,x,y,logx=False,color=None,bins=45):
 
 
 def profile_archive(profiles,labels,centers):
-    """Export member bands and representative profiles without scatter plots."""
+    """Export pointwise median representative profiles without percentile envelopes."""
     import io,zipfile
     import matplotlib
     matplotlib.use('Agg')
@@ -117,16 +116,16 @@ def profile_archive(profiles,labels,centers):
     with plt.rc_context({'font.family':'sans-serif','font.size':10,'axes.linewidth':.8,'svg.fonttype':'none','pdf.fonttype':42,'xtick.direction':'out','ytick.direction':'out'}):
         fig,ax=plt.subplots(figsize=(5.6,4.2),layout='constrained')
         for j,center in enumerate(centers):
-            members=profiles[labels==j];lo,hi=np.percentile(members,[10,90],axis=0);color=PALETTE[j%len(PALETTE)]
-            ax.fill_between(phase,lo,hi,color=color,alpha=.12)
-            ax.plot(phase,center,color=color,lw=1.5,label=f'Cluster {j} (n={len(members)})')
-            for pos,t in enumerate(phase):rows.append({'cluster':j,'phase':t,'representative_blockade_nA':center[pos],'p10_nA':lo[pos],'p90_nA':hi[pos],'events':len(members)})
+            members=profiles[labels==j];color=PALETTE[j%len(PALETTE)]
+            ax.plot(phase,center,color=color,lw=1.8,label=f'Cluster {j} (n={len(members)})')
+            for pos,t in enumerate(phase):
+                rows.append({'cluster':j,'phase':t,'median_representative_blockade_nA':center[pos],'events':len(members)})
         ax.set_xlabel('Fraction of event duration');ax.set_ylabel('Current blockade (nA)');ax.legend(frameon=False,fontsize=8)
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
             for ext in ['pdf','svg','png']:
                 b=io.BytesIO();fig.savefig(b,format=ext,dpi=600);z.writestr('cluster_profiles.'+ext,b.getvalue())
             z.writestr('profile_summary.csv',pd.DataFrame(rows).to_csv(index=False))
-            z.writestr('README.txt','Profiles from the selected clustering signal. Bands are 10th–90th member percentiles, not confidence intervals. For DTW the representative curves are aligned barycentres while percentile bands use unwarped profiles. Absolute duration is removed from these profiles; amplitude is retained.\n')
+            z.writestr('README.txt','Representative curves are pointwise medians of all duration-normalised member profiles. No percentile envelope is used. Absolute duration is removed from these profiles; blockade amplitude remains in nA.\n')
         plt.close(fig)
     return out.getvalue()
 
@@ -140,7 +139,7 @@ def hull_vertices(points):
     except QhullError:return None
 
 
-def cluster_pca_figure(projection,axis_labels,outlines=True):
+def cluster_pca_figure(projection,axis_labels,outlines=False):
     f=go.Figure()
     for j,(label,g) in enumerate(projection.groupby('Cluster',sort=True)):
         color=PALETTE[j%len(PALETTE)];points=g[['PC1','PC2']].to_numpy();poly=hull_vertices(points)
@@ -150,8 +149,8 @@ def cluster_pca_figure(projection,axis_labels,outlines=True):
             f.add_trace(go.Scatter(x=closed[:,0],y=closed[:,1],mode='lines',line=dict(color=color,width=1),fill='toself',fillcolor=f'rgba({rgb[0]},{rgb[1]},{rgb[2]},0.12)',showlegend=False,hoverinfo='skip'))
         f.add_trace(go.Scatter(x=points[:,0],y=points[:,1],mode='markers',name=f'Cluster {label} (n={len(g)})',marker=dict(color=color,size=5,opacity=.7),
             customdata=g[['Event ID','Duration (ms)','Measured mean blockade (nA)']].to_numpy(),hovertemplate='Event %{customdata[0]:.0f}<br>Duration %{customdata[1]:.4g} ms<br>Measured mean blockade %{customdata[2]:.4g} nA<br>PC1 %{x:.4g}<br>PC2 %{y:.4g}<extra>%{fullData.name}</extra>'))
-        mean=points.mean(axis=0)
-        f.add_trace(go.Scatter(x=[mean[0]],y=[mean[1]],mode='markers',marker=dict(symbol='x',size=11,color='black'),name=f'Cluster {label} mean position',showlegend=False,hovertemplate='Mean position in displayed PCA coordinates<extra></extra>'))
+        center=np.median(points,axis=0)
+        f.add_trace(go.Scatter(x=[center[0]],y=[center[1]],mode='markers',marker=dict(symbol='x',size=11,color='black'),name=f'Cluster {label} median position',showlegend=False,hovertemplate='Median position in displayed PCA coordinates<extra></extra>'))
     f.update_layout(xaxis_title=axis_labels['PC1'],yaxis_title=axis_labels['PC2'],height=460)
     return f
 
@@ -187,7 +186,7 @@ def publication_archive(info,event_ids,source,method,outlines=True,time_examples
             members=np.flatnonzero(labels==j);points=embedding[members];color=PALETTE[j%len(PALETTE)];poly=hull_vertices(points)
             if outlines and poly is not None:ax.fill(poly[:,0],poly[:,1],color=color,alpha=.12);closed=np.vstack([poly,poly[0]]);ax.plot(closed[:,0],closed[:,1],color=color,lw=.8)
             ax.scatter(points[:,0],points[:,1],color=color,s=10,alpha=.7,edgecolors='none',label=f'Cluster {j} (n={len(members)})')
-            mean=points.mean(axis=0);ax.scatter(*mean,marker='x',color='black',s=40,lw=1.4)
+            center=np.median(points,axis=0);ax.scatter(*center,marker='x',color='black',s=40,lw=1.4)
         ax.set_xlabel(f'PC1 ({100*variance[0]:.1f}% variance)' if variance else 'PC1');ax.set_ylabel(f'PC2 ({100*variance[1]:.1f}% variance)' if len(variance)>1 else 'PC2 (zero if only one PC retained)');ax.legend(frameon=False,fontsize=8,ncol=min(k,5),loc='upper center',bbox_to_anchor=(.5,1.17));ax.set_title('a) PCA projection',loc='left',pad=25)
         # Common profile y scale permits honest comparison across cluster panels.
         low=min(profiles.min(),centers.min());high=max(profiles.max(),centers.max());pad=max(.05,.06*(high-low));axes=[]
@@ -306,20 +305,96 @@ def dendrogram_figure(linkage_matrix,k=None,p=50):
     return f
 
 
-def member_profile_figure_hart(profiles,labels,centers,group,limit=80):
-    """Hart-style cluster panel: member traces + 10–90% envelope + representative mean."""
+def member_profile_figure_hart(profiles,labels,centers,group,limit=60):
+    """DNA event-family panel: reproducible member traces + bold median representative."""
     phase=(np.arange(profiles.shape[1])+.5)/profiles.shape[1]
-    members=np.flatnonzero(np.asarray(labels)==group);p=np.asarray(profiles)[members];rng=np.random.default_rng(42)
-    chosen=np.sort(rng.choice(members,min(limit,len(members)),replace=False));lo,hi=np.percentile(p,[10,90],axis=0)
+    members=np.flatnonzero(np.asarray(labels)==group);rng=np.random.default_rng(42)
+    chosen=np.sort(rng.choice(members,min(limit,len(members)),replace=False))
     f=go.Figure()
-    f.add_trace(go.Scatter(x=phase,y=lo,line=dict(width=0),showlegend=False,hoverinfo='skip'))
-    f.add_trace(go.Scatter(x=phase,y=hi,fill='tonexty',line=dict(width=0),opacity=.12,name='10–90% member range',hoverinfo='skip'))
     for pos in chosen:
-        f.add_trace(go.Scatter(x=phase,y=profiles[pos],mode='lines',line=dict(color='rgba(90,90,90,0.10)',width=.7),showlegend=False,hoverinfo='skip'))
-    f.add_trace(go.Scatter(x=phase,y=centers[group],mode='lines',line=dict(color='#D62728',width=2.4),name='Mean representative'))
-    f.update_layout(title=f'Cluster {group} · n={len(members)}',xaxis_title='Fraction of event duration',yaxis_title='Blockade (nA)',height=310)
+        f.add_trace(go.Scatter(x=phase,y=profiles[pos],mode='lines',
+                               line=dict(color='rgba(90,90,90,0.12)',width=.7),
+                               showlegend=False,hoverinfo='skip'))
+    f.add_trace(go.Scatter(x=phase,y=centers[group],mode='lines',
+                           line=dict(color='#D62728',width=2.6),name='Median representative'))
+    f.update_layout(title=f'Cluster {group} · n={len(members)}',
+                    xaxis_title='Fraction of event duration',yaxis_title='Blockade (nA)',height=310)
     return f
 
+
+
+def blockade_dwell_figure(table,blockade_col='clustering_resolved_weighted_mean_nA'):
+    """Direct physical view: dwell time versus duration-weighted sustained blockade."""
+    d=table[np.isfinite(table['duration_ms'])&np.isfinite(table[blockade_col])&(table['duration_ms']>0)].copy()
+    d['Cluster']=d['cluster'].astype(str)
+    f=px.scatter(d,x='duration_ms',y=blockade_col,color='Cluster',log_x=True,opacity=.55,
+                 hover_data=[c for c in ['event_index','clustering_deepest_plateau_nA','clustering_resolved_levels'] if c in d],
+                 labels={'duration_ms':'Dwell time (ms)',blockade_col:'Duration-weighted resolved blockade (nA)'},
+                 color_discrete_sequence=PALETTE)
+    f.update_layout(height=450)
+    return f
+
+
+def population_fraction_figure(table):
+    counts=table.groupby('cluster').size().sort_index()
+    pct=100*counts/counts.sum()
+    f=go.Figure(go.Bar(x=[f'Cluster {int(i)}' for i in counts.index],y=pct.to_numpy(),
+                       text=[f'{v:.1f}%' for v in pct],textposition='auto'))
+    f.update_layout(xaxis_title='Signal family',yaxis_title='Population (%)',height=380)
+    return f
+
+
+def level_composition_figure(table,level_col='clustering_resolved_levels'):
+    """Within-cluster percentages of one-, two-, and >=3-level resolved events."""
+    d=table[['cluster',level_col]].dropna().copy()
+    d['level_class']=np.where(d[level_col]<=1,'1 level',np.where(d[level_col]==2,'2 levels','≥3 levels'))
+    order=['1 level','2 levels','≥3 levels'];clusters=sorted(d.cluster.unique())
+    f=go.Figure()
+    for cls in order:
+        vals=[]
+        for c in clusters:
+            sub=d[d.cluster==c]
+            vals.append(100*float((sub.level_class==cls).mean()) if len(sub) else 0.)
+        f.add_trace(go.Bar(x=[f'Cluster {int(c)}' for c in clusters],y=vals,name=cls))
+    f.update_layout(barmode='stack',xaxis_title='Signal family',yaxis_title='Within-cluster events (%)',
+                    yaxis_range=[0,100],height=400)
+    return f
+
+
+def occupancy_figure(table,occupancy_col='clustering_deepest_plateau_fraction'):
+    d=table[['cluster',occupancy_col]].dropna().copy()
+    f=go.Figure()
+    for j,c in enumerate(sorted(d.cluster.unique())):
+        vals=d.loc[d.cluster==c,occupancy_col]
+        f.add_trace(go.Box(y=vals,name=f'Cluster {int(c)}',boxpoints='outliers',
+                           marker=dict(size=3),line=dict(width=1.2)))
+    f.update_layout(yaxis_title='Fraction of analysed duration in deepest state',
+                    xaxis_title='Signal family',height=400)
+    return f
+
+
+def physical_feature_distributions_figure(table):
+    """Four direct physical distributions used for interpretation, not all for clustering."""
+    from plotly.subplots import make_subplots
+    specs=[
+        ('duration_ms','Dwell time (ms)'),
+        ('clustering_resolved_weighted_mean_nA','Weighted blockade (nA)'),
+        ('clustering_deepest_plateau_nA','Deepest sustained blockade (nA)'),
+        ('clustering_ecd_nA_ms','ECD (nA·ms)'),
+    ]
+    f=make_subplots(rows=2,cols=2,subplot_titles=[b for _,b in specs])
+    clusters=sorted(table.cluster.unique())
+    for idx,(field,label) in enumerate(specs):
+        r=idx//2+1;c=idx%2+1
+        if field not in table:continue
+        for j,cl in enumerate(clusters):
+            vals=table.loc[table.cluster==cl,field].dropna()
+            f.add_trace(go.Box(y=vals,name=f'Cluster {int(cl)}',legendgroup=str(cl),
+                               showlegend=(idx==0),boxpoints=False,line=dict(width=1.1)),
+                        row=r,col=c)
+        f.update_yaxes(title_text=label,row=r,col=c)
+    f.update_layout(height=650,boxmode='group')
+    return f
 
 def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,source='Selected fits',method='PCA + agglomerative',dendrogram_p=50):
     """Export the main and supplementary-style DNA clustering figures as separate files.
@@ -349,10 +424,7 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         fig,ax=plt.subplots(figsize=(6.2,4.6),layout='constrained')
         for j in range(k):
             pts=emb[labels==j];ax.scatter(pts[:,0],pts[:,1],s=9,alpha=.55,edgecolors='none',color=PALETTE[j%len(PALETTE)],label=f'Cluster {j} (n={len(pts)})')
-            poly=hull_vertices(pts)
-            if poly is not None:
-                ax.fill(poly[:,0],poly[:,1],alpha=.09,color=PALETTE[j%len(PALETTE)]);closed=np.vstack([poly,poly[0]]);ax.plot(closed[:,0],closed[:,1],lw=.8,color=PALETTE[j%len(PALETTE)])
-            ax.scatter(*pts.mean(axis=0),marker='x',color='black',s=35,lw=1.2)
+            ax.scatter(*np.median(pts,axis=0),marker='x',color='black',s=35,lw=1.2)
         ax.set_xlabel(f'PC1 ({100*variance[0]:.1f}% variance)' if len(variance)>0 else 'PC1');ax.set_ylabel(f'PC2 ({100*variance[1]:.1f}% variance)' if len(variance)>1 else 'PC2')
         ax.legend(frameon=False,fontsize=8);save(fig,'main_pca_clusters')
 
@@ -362,15 +434,63 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         for j in range(rows*cols):
             ax=axes.flat[j]
             if j>=k:ax.axis('off');continue
-            ids=np.flatnonzero(labels==j);sample=np.sort(rng.choice(ids,min(100,len(ids)),replace=False));p=profiles[ids];lo,hi=np.percentile(p,[10,90],axis=0)
-            ax.fill_between(phase,lo,hi,color=PALETTE[j%len(PALETTE)],alpha=.12)
-            for pos in sample:ax.plot(phase,profiles[pos],color='0.45',alpha=.07,lw=.45)
-            ax.plot(phase,centers[j],color='#D62728',lw=1.7);ax.set_title(f'Cluster {j} (n={len(ids)})');ax.set_xlabel('Fraction of event duration');ax.set_ylabel('Blockade (nA)');ax.set_ylim(low-pad,high+pad)
+            ids=np.flatnonzero(labels==j);sample=np.sort(rng.choice(ids,min(60,len(ids)),replace=False))
+            for pos in sample:ax.plot(phase,profiles[pos],color='0.45',alpha=.10,lw=.5)
+            ax.plot(phase,centers[j],color='#D62728',lw=1.8);ax.set_title(f'Cluster {j} (n={len(ids)})');ax.set_xlabel('Fraction of event duration');ax.set_ylabel('Blockade (nA)');ax.set_ylim(low-pad,high+pad)
         save(fig,'main_cluster_profiles')
 
         fig,ax=plt.subplots(figsize=(6.2,4.3),layout='constrained')
         for j,c in enumerate(centers):ax.plot(phase,c,lw=1.7,color=PALETTE[j%len(PALETTE)],label=f'Cluster {j}')
         ax.set_xlabel('Fraction of event duration');ax.set_ylabel('Blockade (nA)');ax.legend(frameon=False);save(fig,'main_representative_overlay')
+
+
+        # Main physical interpretation: blockade versus dwell.
+        if 'clustering_resolved_weighted_mean_nA' in feature_table:
+            fig,ax=plt.subplots(figsize=(6.2,4.5),layout='constrained')
+            for j in range(k):
+                sub=feature_table[feature_table.cluster==j]
+                ax.scatter(sub.duration_ms,sub.clustering_resolved_weighted_mean_nA,s=8,alpha=.45,
+                           edgecolors='none',color=PALETTE[j%len(PALETTE)],label=f'Cluster {j}')
+            ax.set_xscale('log');ax.set_xlabel('Dwell time (ms)');ax.set_ylabel('Duration-weighted resolved blockade (nA)')
+            ax.legend(frameon=False,fontsize=8);save(fig,'main_blockade_vs_dwell')
+
+        # Main physical feature distributions.
+        dist_fields=[('duration_ms','Dwell time (ms)'),
+                     ('clustering_resolved_weighted_mean_nA','Weighted blockade (nA)'),
+                     ('clustering_deepest_plateau_nA','Deepest sustained blockade (nA)'),
+                     ('clustering_ecd_nA_ms','ECD (nA·ms)')]
+        fig,axes=plt.subplots(2,2,figsize=(9,6.5),layout='constrained')
+        for ax,(field,label) in zip(axes.flat,dist_fields):
+            if field not in feature_table:
+                ax.axis('off');continue
+            data=[feature_table.loc[feature_table.cluster==j,field].dropna().to_numpy() for j in range(k)]
+            ax.boxplot(data,labels=[str(j) for j in range(k)],showfliers=False)
+            ax.set_xlabel('Cluster');ax.set_ylabel(label)
+        save(fig,'main_physical_distributions')
+
+        # Population fractions.
+        counts=feature_table.groupby('cluster').size().reindex(range(k),fill_value=0)
+        fig,ax=plt.subplots(figsize=(5.5,4.0),layout='constrained')
+        ax.bar(np.arange(k),100*counts.to_numpy()/counts.sum());ax.set_xticks(np.arange(k));ax.set_xlabel('Cluster');ax.set_ylabel('Population (%)')
+        save(fig,'main_population_fraction')
+
+        # Resolved-level composition.
+        if 'clustering_resolved_levels' in feature_table:
+            fig,ax=plt.subplots(figsize=(5.8,4.1),layout='constrained');bottom=np.zeros(k)
+            vals=feature_table.clustering_resolved_levels
+            classes=[('1 level',vals<=1),('2 levels',vals==2),('≥3 levels',vals>=3)]
+            for label,mask in classes:
+                pct=np.array([100*np.mean(mask[feature_table.cluster==j]) if np.any(feature_table.cluster==j) else 0. for j in range(k)])
+                ax.bar(np.arange(k),pct,bottom=bottom,label=label);bottom+=pct
+            ax.set_xticks(np.arange(k));ax.set_xlabel('Cluster');ax.set_ylabel('Within-cluster events (%)');ax.set_ylim(0,100);ax.legend(frameon=False,fontsize=8)
+            save(fig,'main_level_composition')
+
+        # Fraction of event spent in its deepest resolved state.
+        if 'clustering_deepest_plateau_fraction' in feature_table:
+            fig,ax=plt.subplots(figsize=(5.8,4.1),layout='constrained')
+            data=[feature_table.loc[feature_table.cluster==j,'clustering_deepest_plateau_fraction'].dropna().to_numpy() for j in range(k)]
+            ax.boxplot(data,labels=[str(j) for j in range(k)],showfliers=False);ax.set_xlabel('Cluster');ax.set_ylabel('Deepest-state occupancy fraction')
+            save(fig,'main_deepest_state_occupancy')
 
         # Supplementary scree plot.
         scree=100*np.asarray(info.get('scree',[]));cum=np.cumsum(scree);pcs=np.arange(1,len(scree)+1)
@@ -399,6 +519,6 @@ def hart_style_archive(info,event_ids,feature_table,cluster_summary,k_scan=None,
         z.writestr('cluster_features.csv',feature_table.to_csv(index=False));z.writestr('cluster_summary.csv',cluster_summary.to_csv(index=False))
         z.writestr('pca_coordinates.csv',pd.DataFrame({'event_id':event_ids,'cluster':labels,'PC1':emb[:,0],'PC2':emb[:,1]}).to_csv(index=False))
         z.writestr('representative_profiles.csv',pd.DataFrame([{'cluster':j,'phase':float(t),'blockade_nA':float(v)} for j,c in enumerate(centers) for t,v in zip(phase,c)]).to_csv(index=False))
-        z.writestr('README.txt',('Hart-style DNA clustering export generated from the current recording. Main-style outputs: PCA cluster map, per-cluster member/representative profiles, and representative overlay. Supplementary-style outputs: scree plot, elbow-silhouette scan, optional 3-PC view, and Ward dendrogram for agglomerative clustering. These are analysis analogues, not reproductions of published artwork. Cluster labels denote signal families only; physical/topological assignments require independent interpretation.'))
+        z.writestr('README.txt',('Hart-style DNA clustering export generated from the current recording. Main-style outputs: PCA cluster map without convex-hull fills, per-cluster member traces with median representatives, and representative overlay. Supplementary-style outputs: scree plot, elbow-silhouette scan, optional 3-PC view, and Ward dendrogram for agglomerative clustering. These are analysis analogues, not reproductions of published artwork. Cluster labels denote signal families only; physical/topological assignments require independent interpretation.'))
         z.writestr('settings.json',json.dumps({'source':source,'method':method,'n_components':info.get('n_components'),'silhouette':info.get('silhouette'),'calinski_harabasz':info.get('calinski_harabasz'),'davies_bouldin':info.get('davies_bouldin')},indent=2))
     return out.getvalue()

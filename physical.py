@@ -12,6 +12,7 @@ from analysis import mask
 
 PHYSICAL_DESCRIPTIONS={
  'duration_ms':'Detected event end minus start (ms). Kinetic descriptor; total detected duration is preserved even when short edge plateaus are omitted.',
+ 'log10_duration_ms':'Base-10 logarithm of detected event duration in ms. Used for clustering so long dwell-time tails do not dominate the PCA scale.',
  'resolved_weighted_mean_nA':'Duration-weighted mean blockade of the retained resolved plateaus (nA). This is the typical sustained blockade state after level QC.',
  'resolved_weighted_mean_ratio':'Duration-weighted resolved blockade divided by the user-supplied condition-specific single-file reference.',
  'deepest_plateau_nA':'Deepest sustained resolved plateau blockade (nA), excluding isolated sample maxima.',
@@ -159,6 +160,7 @@ def level_features(events,source='Selected fits',min_duration_us=25.,min_height_
                 blockade_temporal_centroid=temporal_centroid,
                 blockade_skewness=skew,
                 duration_ms=duration*1000,
+                log10_duration_ms=float(np.log10(duration*1000.)),
                 physical_eligible=True)
 
             if reference_nA is not None:

@@ -18,10 +18,14 @@ _REQUIRED = {
 }
 _missing = {filename:[name for name in names if not hasattr(module,name)] for filename,(module,names) in _REQUIRED.items()}
 _missing = {filename:names for filename,names in _missing.items() if names}
-if _missing:
-    st.error('DNA Event Lab file-version mismatch: one or more helper files are older than this app.py.')
+_EXPECTED_RELEASE='0.6.4'
+_version_mismatch={filename:getattr(module,'RELEASE_VERSION',None) for filename,(module,_) in _REQUIRED.items() if getattr(module,'RELEASE_VERSION',None)!=_EXPECTED_RELEASE}
+if _missing or _version_mismatch:
+    st.error('DNA Event Lab file-version mismatch: helper files are not all from release '+_EXPECTED_RELEASE+'.')
     for filename,names in _missing.items():
         st.code(f'{filename}: missing ' + ', '.join(names))
+    for filename,version in _version_mismatch.items():
+        st.code(f'{filename}: release {version!r}, expected {_EXPECTED_RELEASE}')
     st.info('Replace app.py, analysis.py, physical.py, plots.py, workflow.py and requirements.txt together from the same release, then reboot the Streamlit app. Do not keep version-suffixed filenames in the repository; the deployed files must be named exactly app.py, analysis.py, physical.py, plots.py and workflow.py.')
     st.stop()
 
@@ -31,7 +35,7 @@ from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle
 from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
-st.title('DNA Event Lab · v0.6.3')
+st.title('DNA Event Lab · v0.6.4')
 st.caption('Load → inspect → refine → plot → cluster → save')
 st.sidebar.title('Your analysis')
 S=st.session_state
@@ -111,7 +115,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.6.2','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.6.4','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},
       'refinement_history':S.get('refinement_history',[]),'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))
@@ -490,7 +494,7 @@ elif step.startswith('5'):
         st.markdown('**These five features form the PCA/clustering space:**')
         for f in core_fields:st.write('• '+PHYSICAL_DESCRIPTIONS[f])
         st.caption('Why these five? They represent kinetics, typical sustained blockade, maximum sustained occupancy, multilevel heterogeneity and temporal asymmetry. ECD, level count, occupancy and transition descriptors are retained for interpretation rather than being allowed to repeatedly weight the PCA.')
-        st.caption('Dwell time enters PCA as log₁₀(duration/ms). Amplitude quantities remain in nA. All retained features are then scaled by median and interquartile range (RobustScaler), not mean and standard deviation.')
+        st.caption('Dwell time enters PCA as log₁₀(duration/ms). Amplitude quantities remain in nA. Before PCA, features with essentially zero central 90% spread are omitted; retained features are centred at the median and scaled by a safeguarded robust spread so numerical jitter cannot explode a PCA axis.')
 
     positions=st.select_slider('Waveform positions used only for event-family profile plots',[64,128,256],value=cfg.get('positions',128) if cfg.get('positions',128) in [64,128,256] else 128)
     positions_idx=np.flatnonzero(physical_audit.physical_eligible.to_numpy())
@@ -505,8 +509,11 @@ elif step.startswith('5'):
     with st.expander('3 · Feature QC and PCA dimensionality',expanded=True):
         show(feature_correlation_figure(space_diag['correlation'],[f.replace('_',' ') for f in core_fields]),'cluster_feature_correlation')
         if space_diag['dropped_constant']:st.warning('Constant features removed: '+', '.join(space_diag['dropped_constant']))
+        if space_diag.get('dropped_low_spread'):st.info('Features omitted because their central 90% was effectively constant: '+', '.join(space_diag['dropped_low_spread']))
         if space_diag['dropped_correlated']:st.info('Near-duplicate features removed before PCA: '+', '.join(space_diag['dropped_correlated']))
         st.write('Retained for PCA:',', '.join(space_diag['retained_features']))
+        st.dataframe(pd.DataFrame(space_diag.get('spread_table',[])).round(6),hide_index=True)
+        st.caption('Scaling uses median / max(IQR, 0.25 × Q05–Q95 spread). This safeguard prevents a tiny non-zero IQR in a nearly constant plateau descriptor from producing enormous PCA coordinates.')
         show(pca_scree_figure(space_diag['scree']),'cluster_scree_pre')
         scree_table=pd.DataFrame({'PC':np.arange(1,len(space_diag['scree'])+1),'Explained variance':space_diag['scree'],'Cumulative variance':space_diag['cumulative']})
         st.dataframe(scree_table.round(4),hide_index=True)
@@ -563,7 +570,7 @@ elif step.startswith('5'):
                 retained=[f for f,keep in zip(core_fields,info.get('feature_keep_mask',[True]*len(core_fields))) if keep]
                 clustering_meta={'source':source,'method':algorithm,'k':int(k),'selection':'manual after elbow/silhouette diagnostics',
                     'features':core_fields,'pca_components':int(info.get('n_components',npc)),'profile_positions':positions,'k_scan_range':[2,kmax],
-                    'feature_set':'five-feature DNA physical core','scaling':'RobustScaler median/IQR','physical_settings':physical_params,
+                    'feature_set':'five-feature DNA physical core','scaling':'median / max(IQR, 0.25 x Q05-Q95 spread), with low-spread feature QC','physical_settings':physical_params,
                     'excluded_events':len(excluded),'retained_features':retained,'feature_center':info.get('feature_center'),
                     'feature_scale':info.get('feature_scale'),'pca_loadings':info.get('loadings'),'k_diagnostics':current_scan,
                     'correlation_threshold':.98}
@@ -689,7 +696,7 @@ elif step.startswith('5'):
         with st.expander('Numerical diagnostics'):
             st.write('Silhouette:',info.get('silhouette'));st.write('Calinski–Harabasz:',info.get('calinski_harabasz'));st.write('Davies–Bouldin:',info.get('davies_bouldin'))
             if np.isfinite(info.get('ari',np.nan)):st.write('K-means repeat-seed ARI:',info.get('ari'))
-            st.write('Scaling: median / interquartile range (RobustScaler)')
+            st.write('Scaling: safeguarded robust scaling (median / max[IQR, 0.25 × Q05–Q95 spread])')
             st.write('PCA components used:',info.get('n_components'));st.write('Cumulative variance in used PCs:',float(np.sum(info.get('scree',[])[:info.get('n_components',0)])))
             if scan:st.write('Elbow suggestion:',scan['elbow_k']);st.write('Silhouette peak:',scan['silhouette_k'])
             st.caption('These diagnose signal geometry only. Physical/topological interpretation still comes from the waveform and resolved-level behaviour.')

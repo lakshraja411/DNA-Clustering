@@ -1,4 +1,4 @@
-RELEASE_VERSION='0.6.3'
+RELEASE_VERSION='0.6.4'
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px

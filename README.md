@@ -1,4 +1,11 @@
-# DNA Event Lab v0.6.3
+# DNA Event Lab v0.6.4
+
+## PCA scaling hotfix
+
+Version 0.6.4 fixes a numerical pathology in the v0.6.3 PCA preprocessing. Plateau-derived descriptors can be nearly constant for most events while retaining a very small non-zero IQR. Dividing by that microscopic IQR can create PCA coordinates of order 10^9 and make PC1 appear to explain ~100% of the variance. The clustering is not physically interpretable in that state.
+
+The new preprocessing removes features whose central 90% spread is effectively zero, prunes near-duplicates, centres retained variables at the median, and scales by `max(IQR, 0.25*(Q95-Q05))`. Step 5 now displays a feature-spread QC table so the actual denominator and any dropped descriptor are visible.
+
 
 **Deployment:** replace the repository files together and keep the exact names `app.py`, `analysis.py`, `physical.py`, `plots.py`, `workflow.py`, and `requirements.txt`. Reboot the Streamlit app after the commit. The app now reports the exact stale helper file/function if versions are mixed.
 

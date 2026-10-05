@@ -1,3 +1,7 @@
+# Version 0.6.4 PCA scaling correction
+
+The v0.6.3 median/IQR scaling could become numerically unstable when a plateau-derived feature had an almost-zero but non-zero IQR. This could generate billion-scale PCA coordinates and an artificial PC1≈100% result. v0.6.4 treats a feature with effectively zero Q05-Q95 spread as uninformative for the global PCA and otherwise uses a safeguarded robust denominator `max(IQR, 0.25*(Q95-Q05))`. Raw physical values remain unchanged and remain available for interpretation.
+
 # Version 0.6.2 clustering design
 
 The primary PCA/clustering space is intentionally restricted to five complementary continuous descriptors: `log10_duration_ms`, `resolved_weighted_mean_nA`, `deepest_plateau_nA`, `resolved_weighted_std_nA`, and `blockade_temporal_centroid`. These represent kinetics, typical sustained blockade, maximum sustained blockade, resolved-level heterogeneity, and temporal asymmetry. ECD, discrete level count, deepest-state occupancy/position, range and transition direction are interpretation/QC descriptors rather than default PCA inputs.

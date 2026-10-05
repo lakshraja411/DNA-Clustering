@@ -1,5 +1,5 @@
 """Nanopore Shape Lab 0.4: explicit signal processing and lossless event subsets."""
-RELEASE_VERSION='0.6.3'
+RELEASE_VERSION='0.6.4'
 from dataclasses import dataclass
 import io, json, re, zipfile
 import numpy as np
@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.6.2'
+VERSION='0.6.4'
 @dataclass
 class Event:
     index:int
@@ -292,50 +292,101 @@ def feature_table(events):
     return pd.DataFrame(rows)
 
 def _feature_space(features,n_components=2,correlation_threshold=.98):
-    """Standardise selected features, prune constants/near-duplicates, then fit PCA.
+    """Build a numerically stable PCA space for the physical DNA descriptors.
 
-    The pruning order follows the supplied feature order, so the user-facing feature list
-    should place the preferred physical representative of a correlated family first.
+    The previous implementation used a conventional median/IQR RobustScaler.  That
+    is unsafe for plateau-derived descriptors that can be almost identical for most
+    events (for example temporal centroid ~= 0.5 or level SD ~= 0) with only a small
+    tail of genuinely different events: an extremely small but non-zero IQR can blow
+    those few events up to enormous scaled values and make PC1 explain ~100% of the
+    variance.  Here we therefore:
+      1. remove features whose central 90% spread is effectively zero,
+      2. prune near-duplicate retained features,
+      3. centre at the median, and
+      4. scale by max(IQR, 0.25 * (Q95-Q05)).
+
+    This preserves robust physical scaling without allowing numerical jitter around
+    a dominant plateau value to define the PCA geometry.
     """
     from sklearn.preprocessing import RobustScaler
     x=np.asarray(features,float)
     if x.ndim!=2 or len(x)<3:raise ValueError('Feature matrix must contain at least three events.')
     if not np.isfinite(x).all():raise ValueError('All selected clustering features must be finite.')
-    keep=np.nanstd(x,axis=0)>1e-12
-    dropped_constant=np.flatnonzero(~keep).tolist()
+
+    q05,q25,median,q75,q95=np.percentile(x,[5,25,50,75,95],axis=0)
+    iqr=q75-q25;central90=q95-q05
+    magnitude=np.maximum(1.,np.maximum(np.abs(q05),np.abs(q95)))
+    spread_tol=1e-9+1e-6*magnitude
+    std=np.nanstd(x,axis=0)
+    truly_constant=std<=1e-12
+    low_robust_spread=central90<=spread_tol
+    initial_keep=~(truly_constant|low_robust_spread)
+    dropped_constant=np.flatnonzero(truly_constant).tolist()
+    dropped_low_spread=np.flatnonzero((~truly_constant)&low_robust_spread).tolist()
+
     dropped_correlated=[]
+    keep=initial_keep.copy()
     if correlation_threshold is not None and keep.sum()>1:
         idx=np.flatnonzero(keep);corr=np.corrcoef(x[:,idx],rowvar=False);chosen=[]
         for j in range(len(idx)):
-            if not chosen or all(abs(corr[j,h])<float(correlation_threshold) for h in chosen):
+            if not chosen or all(np.isfinite(corr[j,h]) and abs(corr[j,h])<float(correlation_threshold) for h in chosen):
                 chosen.append(j)
             else:
                 dropped_correlated.append(int(idx[j]))
         reduced=np.zeros_like(keep);reduced[idx[chosen]]=True;keep=reduced
-    if keep.sum()<1:raise ValueError('Need at least one non-constant clustering feature after pruning.')
-    # Median/IQR scaling reduces the leverage of long-tailed DNA-event features.
-    scaler=RobustScaler(quantile_range=(25.,75.));scaled=scaler.fit_transform(x[:,keep])
+    if keep.sum()<1:
+        raise ValueError('No clustering feature has enough robust spread after QC. Review feature extraction and resolution settings.')
+
+    retained=np.flatnonzero(keep)
+    center=median[retained]
+    # Normal-like variables keep their IQR scaling.  Zero-inflated/peaked variables
+    # get a floor tied to the central 90% range, preventing microscopic denominators.
+    scale=np.maximum(iqr[retained],.25*central90[retained])
+    scale=np.maximum(scale,spread_tol[retained])
+    scaled=(x[:,retained]-center)/scale
+
+    # Keep a fitted sklearn scaler object for backwards-compatible metadata access;
+    # overwrite its centre/scale with the safeguarded values actually used above.
+    scaler=RobustScaler(quantile_range=(25.,75.)).fit(x[:,retained])
+    scaler.center_=center.copy();scaler.scale_=scale.copy()
+
     full=PCA().fit(scaled);max_nc=min(scaled.shape[1],len(scaled)-1)
     nc=max(1,min(int(n_components or 2),max_nc))
     transformed=full.transform(scaled);coords=transformed[:,:nc]
+
+    stats=[]
+    for j in range(x.shape[1]):
+        if j in dropped_constant:reason='constant'
+        elif j in dropped_low_spread:reason='central 90% effectively constant'
+        elif j in dropped_correlated:reason=f'near-duplicate (|r| >= {float(correlation_threshold):.2f})'
+        else:reason='retained'
+        used_scale=float(scale[list(retained).index(j)]) if j in retained else np.nan
+        stats.append(dict(feature_index=int(j),median=float(median[j]),iqr=float(iqr[j]),central90_spread=float(central90[j]),
+                          standard_deviation=float(std[j]),scale_used=used_scale,status=reason))
     return dict(raw=x,keep=keep,scaled=scaled,scaler=scaler,pca=full,n_components=nc,coords=coords,full_coords=transformed,
-                dropped_constant=dropped_constant,dropped_correlated=dropped_correlated,correlation_threshold=correlation_threshold)
+                dropped_constant=dropped_constant,dropped_low_spread=dropped_low_spread,dropped_correlated=dropped_correlated,
+                correlation_threshold=correlation_threshold,feature_stats=stats,scaling_method='median / max(IQR, 0.25 x Q05-Q95 spread)')
 
 
 def feature_space_diagnostics(features,feature_names=None,correlation_threshold=.98):
     """Return PCA/correlation diagnostics without assigning clusters."""
     x=np.asarray(features,float)
     names=list(feature_names or [f'feature_{i}' for i in range(x.shape[1])])
-    # Request all possible PCs; _feature_space clips safely.
     space=_feature_space(x,n_components=max(1,x.shape[1]),correlation_threshold=correlation_threshold)
     retained=[n for n,k in zip(names,space['keep']) if k]
     dropped_constant=[names[i] for i in space['dropped_constant']]
+    dropped_low_spread=[names[i] for i in space.get('dropped_low_spread',[])]
     dropped_correlated=[names[i] for i in space['dropped_correlated']]
     raw_corr=np.corrcoef(x,rowvar=False) if x.shape[1]>1 else np.array([[1.]])
+    spread_table=[]
+    for name,row in zip(names,space['feature_stats']):
+        spread_table.append({'Feature':name,'Median':row['median'],'IQR':row['iqr'],'Q05-Q95 spread':row['central90_spread'],
+                             'Scale used':row['scale_used'],'Status':row['status']})
     return dict(
-        feature_names=names,retained_features=retained,dropped_constant=dropped_constant,dropped_correlated=dropped_correlated,
-        keep_mask=space['keep'].tolist(),correlation=raw_corr.tolist(),scree=space['pca'].explained_variance_ratio_.tolist(),
-        cumulative=np.cumsum(space['pca'].explained_variance_ratio_).tolist(),max_components=int(space['full_coords'].shape[1]))
+        feature_names=names,retained_features=retained,dropped_constant=dropped_constant,dropped_low_spread=dropped_low_spread,
+        dropped_correlated=dropped_correlated,keep_mask=space['keep'].tolist(),correlation=raw_corr.tolist(),
+        scree=space['pca'].explained_variance_ratio_.tolist(),cumulative=np.cumsum(space['pca'].explained_variance_ratio_).tolist(),
+        max_components=int(space['full_coords'].shape[1]),spread_table=spread_table,scaling_method=space['scaling_method'])
 
 
 def _ward_linkage(coords):

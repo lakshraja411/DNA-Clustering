@@ -1,3 +1,3 @@
-# v0.9.0 clustering note
+# Clustering review — v0.9.1
 
-The primary dataset-feature clustering is unchanged from v0.8.3. New functionality only packages clustered recordings and compares user-matched event families across LiCl, NaCl, KCl, RbCl and CsCl. Cluster IDs are never assumed homologous across salts.
+No clustering mathematics changed from v0.9.0. The update is a cross-salt visual-summary feature only. Heatmap z-scoring is descriptive display standardisation and is never fed back into PCA or clustering.

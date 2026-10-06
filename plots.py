@@ -1,4 +1,4 @@
-RELEASE_VERSION='0.9.0'
+RELEASE_VERSION='0.9.1'
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -677,8 +677,77 @@ def cross_salt_metric_figure(stats,metric='median_dwell_ms',q1='q1_dwell_ms',q3=
     return f
 
 
-def cross_salt_comparison_archive(packages,mapping,stats,x_mode='time_ms',x_range=None,y_range=None,reference_family=None):
-    """Publication export for the Compare salts page: profiles, populations and family-resolved trends."""
+
+def _cross_salt_heatmap_matrix(stats,metric,normalization='Raw values'):
+    """Return family × salt raw and display matrices for a cross-salt heatmap.
+
+    ``normalization`` changes only the colour values.  The source summary table is
+    never modified and clustering/family matching are unaffected.
+    """
+    import pandas as pd
+    d=stats.copy()
+    d=d[d['family'].astype(str)!='Unmapped'].copy()
+    salts=[x for x in SALT_ORDER if x in set(d['salt'])]+[x for x in pd.unique(d['salt']) if x not in SALT_ORDER]
+    families=sorted([x for x in pd.unique(d['family']) if x!='Unmapped'])
+    if not salts or not families:
+        return families,salts,np.empty((0,0)),np.empty((0,0))
+    agg='sum' if metric=='population_pct' else 'first'
+    pivot=d.pivot_table(index='family',columns='salt',values=metric,aggfunc=agg)
+    pivot=pivot.reindex(index=families,columns=salts)
+    raw=pivot.to_numpy(float)
+    shown=raw.copy()
+    mode=str(normalization)
+    if mode.startswith('Row z-score'):
+        for i in range(shown.shape[0]):
+            row=raw[i];good=np.isfinite(row)
+            if not np.any(good):continue
+            mu=float(np.nanmean(row));sd=float(np.nanstd(row))
+            shown[i,good]=0. if sd<=1e-15 else (row[good]-mu)/sd
+    elif mode.startswith('Column z-score'):
+        for j in range(shown.shape[1]):
+            col=raw[:,j];good=np.isfinite(col)
+            if not np.any(good):continue
+            mu=float(np.nanmean(col));sd=float(np.nanstd(col))
+            shown[good,j]=0. if sd<=1e-15 else (col[good]-mu)/sd
+    return families,salts,raw,shown
+
+
+def cross_salt_heatmap_figure(stats,metric,title,colorbar_title,normalization='Raw values',value_suffix='',decimals=2):
+    """Family × electrolyte heatmap for one cross-salt summary metric.
+
+    Raw mode shows physical values directly. Row z-score highlights how each family
+    changes across salts; column z-score highlights how families differ within a salt.
+    Hover text always retains the original physical value.
+    """
+    families,salts,raw,shown=_cross_salt_heatmap_matrix(stats,metric,normalization)
+    if shown.size==0:return go.Figure()
+    zscore=not str(normalization).startswith('Raw')
+    colorscale='RdBu_r' if zscore else 'Viridis'
+    finite=shown[np.isfinite(shown)]
+    zmin=zmax=None
+    if zscore and finite.size:
+        bound=max(1.,float(np.nanmax(np.abs(finite))))
+        zmin,zmax=-bound,bound
+    text=np.empty(raw.shape,dtype=object)
+    for i in range(raw.shape[0]):
+        for j in range(raw.shape[1]):
+            v=shown[i,j]
+            text[i,j]='' if not np.isfinite(v) else f'{v:.{int(decimals)}f}'
+    family_labels=[f'Family {x}' for x in families]
+    cb='z-score' if zscore else colorbar_title
+    fig=go.Figure(go.Heatmap(
+        z=shown,x=salts,y=family_labels,customdata=raw,text=text,texttemplate='%{text}',
+        colorscale=colorscale,zmin=zmin,zmax=zmax,colorbar=dict(title=cb),
+        hovertemplate='Family=%{y}<br>Salt=%{x}<br>Displayed=%{z:.3g}<br>Raw value=%{customdata:.4g}'+value_suffix+'<extra></extra>',
+        hoverongaps=False,
+    ))
+    subtitle='' if not zscore else (' · row-standardised within each family' if str(normalization).startswith('Row') else ' · column-standardised within each salt')
+    fig.update_layout(title=title+subtitle,xaxis_title='Electrolyte',yaxis_title='DNA event family',height=max(330,90*len(families)+180),margin=dict(l=80,r=60,t=70,b=55))
+    fig.update_yaxes(autorange='reversed')
+    return fig
+
+def cross_salt_comparison_archive(packages,mapping,stats,x_mode='time_ms',x_range=None,y_range=None,reference_family=None,heatmap_metrics=None,heatmap_normalization='Raw values'):
+    """Publication export for the Compare salts page, including selected heatmap summaries."""
     import io,json,zipfile
     import pandas as pd
     import matplotlib
@@ -745,7 +814,62 @@ def cross_salt_comparison_archive(packages,mapping,stats,x_mode='time_ms',x_rang
                 ax.plot(range(len(salts)),q.relative_blockade,marker='o',label=f'Family {fam}',color=FAMILY_COLORS.get(fam,PALETTE[j%len(PALETTE)]))
             ax.axhline(1,color='0.6',lw=.8);ax.set_xticks(range(len(salts)),salts);ax.set_xlabel('Electrolyte');ax.set_ylabel(f'Blockade / Family {reference_family} blockade');ax.legend(frameon=False)
             save(fig,'main_relative_blockade_to_reference_family')
+        # Selected family × salt heatmap summaries.
+        metric_specs={
+            'Population fraction':('population_pct','Population (%)','%'),
+            'Median dwell time':('median_dwell_ms','Median dwell time (ms)',' ms'),
+            'Median blockade':('median_blockade_nA','Median mean blockade (nA)',' nA'),
+            'Median ECD':('median_ecd_nA_ms','Median ECD (nA·ms)',' nA·ms'),
+            'Relative blockade':('relative_blockade',f'Blockade / Family {reference_family} median',''),
+        }
+        chosen=list(heatmap_metrics or ['Population fraction','Median dwell time','Median blockade'])
+        valid=[]
+        for label in chosen:
+            spec=metric_specs.get(label)
+            if not spec:continue
+            metric,ylabel,suffix=spec
+            if metric not in stats or not np.isfinite(pd.to_numeric(stats[metric],errors='coerce')).any():continue
+            fams_h,salts_h,raw_h,shown_h=_cross_salt_heatmap_matrix(stats,metric,heatmap_normalization)
+            if not shown_h.size:continue
+            valid.append((label,metric,ylabel,suffix,fams_h,salts_h,raw_h,shown_h))
+            fig,ax=plt.subplots(figsize=(6.4,max(2.8,0.55*len(fams_h)+1.5)),layout='constrained')
+            is_z=not str(heatmap_normalization).startswith('Raw')
+            if is_z:
+                finite=shown_h[np.isfinite(shown_h)];bound=max(1.,float(np.nanmax(np.abs(finite)))) if finite.size else 1.
+                im=ax.imshow(shown_h,aspect='auto',cmap='RdBu_r',vmin=-bound,vmax=bound)
+                cblabel='z-score'
+            else:
+                im=ax.imshow(shown_h,aspect='auto',cmap='viridis');cblabel=ylabel
+            ax.set_xticks(range(len(salts_h)),salts_h);ax.set_yticks(range(len(fams_h)),[f'Family {x}' for x in fams_h]);ax.set_xlabel('Electrolyte');ax.set_ylabel('DNA event family');ax.set_title(label + ('' if not is_z else (' · row z-score' if str(heatmap_normalization).startswith('Row') else ' · column z-score')))
+            for ii in range(shown_h.shape[0]):
+                for jj in range(shown_h.shape[1]):
+                    vv=shown_h[ii,jj]
+                    if np.isfinite(vv):ax.text(jj,ii,f'{vv:.2f}',ha='center',va='center',fontsize=8,color='black')
+            cb=fig.colorbar(im,ax=ax);cb.set_label(cblabel)
+            stem='heatmap_'+label.lower().replace(' ','_').replace('/','_')
+            save(fig,stem)
+            raw_df=pd.DataFrame(raw_h,index=[f'Family {x}' for x in fams_h],columns=salts_h)
+            shown_df=pd.DataFrame(shown_h,index=[f'Family {x}' for x in fams_h],columns=salts_h)
+            z.writestr(stem+'_raw_values.csv',raw_df.to_csv())
+            z.writestr(stem+'_display_values.csv',shown_df.to_csv())
+        # Compact multi-heatmap summary (up to four selected metrics).
+        if valid:
+            use=valid[:4];n=len(use);cols_h=2 if n>1 else 1;rows_h=int(np.ceil(n/cols_h))
+            fig,axs=plt.subplots(rows_h,cols_h,figsize=(8.6,3.2*rows_h),squeeze=False,layout='constrained')
+            for idx,(label,metric,ylabel,suffix,fams_h,salts_h,raw_h,shown_h) in enumerate(use):
+                ax=axs[idx//cols_h,idx%cols_h];is_z=not str(heatmap_normalization).startswith('Raw')
+                if is_z:
+                    finite=shown_h[np.isfinite(shown_h)];bound=max(1.,float(np.nanmax(np.abs(finite)))) if finite.size else 1.
+                    im=ax.imshow(shown_h,aspect='auto',cmap='RdBu_r',vmin=-bound,vmax=bound)
+                else:im=ax.imshow(shown_h,aspect='auto',cmap='viridis')
+                ax.set_xticks(range(len(salts_h)),salts_h);ax.set_yticks(range(len(fams_h)),[f'Family {x}' for x in fams_h]);ax.set_title(label)
+                for ii in range(shown_h.shape[0]):
+                    for jj in range(shown_h.shape[1]):
+                        vv=shown_h[ii,jj]
+                        if np.isfinite(vv):ax.text(jj,ii,f'{vv:.2f}',ha='center',va='center',fontsize=7)
+            for idx in range(n,rows_h*cols_h):axs[idx//cols_h,idx%cols_h].axis('off')
+            save(fig,'main_heatmap_summary_across_salts')
         z.writestr('cross_salt_family_summary.csv',stats.to_csv(index=False))
         z.writestr('family_mapping.json',json.dumps({s:{str(k):v for k,v in m.items()} for s,m in mapping.items()},indent=2))
-        z.writestr('README.txt','Cross-salt comparison export. Family labels are user-confirmed correspondences between separately clustered recordings; cluster IDs are not assumed homologous across salts. Error bars on dwell/blockade trend plots are event-level IQRs, not replicate-level uncertainty.\n')
+        z.writestr('README.txt','Cross-salt comparison export. Family labels are user-confirmed correspondences between separately clustered recordings; cluster IDs are not assumed homologous across salts. Error bars on dwell/blockade trend plots are event-level IQRs, not replicate-level uncertainty. Heatmaps are descriptive summaries only; row/column z-scoring changes the colour display, not the underlying values or clustering.\n')
     return out.getvalue()

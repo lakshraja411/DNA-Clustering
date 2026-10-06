@@ -6,7 +6,7 @@ they cannot be resolved under the declared amplitude/noise criterion, and platea
 persist for the declared minimum time.  The original trace, fit and event boundaries are
 never modified.
 """
-RELEASE_VERSION='0.9.0'
+RELEASE_VERSION='0.9.1'
 import numpy as np
 import pandas as pd
 from analysis import mask

@@ -14,11 +14,11 @@ _REQUIRED = {
     'analysis.py': (_analysis, ['load_events','load_dataset','link_dataset','describe','refine','fit_metrics','cluster_features','feature_space_diagnostics','cluster_count_diagnostics','safe_settings','DATASET_FEATURE_NAMES','DATASET_FEATURE_DESCRIPTIONS','dataset_feature_name','dataset_feature_label','aligned_event_profiles','cluster_median_profiles']),
     'physical.py': (_physical, ['level_features','PHYSICAL_DESCRIPTIONS']),
     'workflow.py': (_workflow, ['active_events','signal_events','fitting_bytes','match_raw','bundle','comparison_package']),
-    'plots.py': (_plots, ['trace_figure','distribution_figures','profile_figure','LABELS','scientific','figure_archive','profile_archive','cluster_pca_figure','member_profile_figure_hart','representative_time_examples','time_example_figure','pca_scree_figure','k_diagnostics_figure','feature_correlation_figure','cluster_pca_3d_figure','dendrogram_figure','hart_style_archive','blockade_dwell_figure','population_fraction_figure','level_composition_figure','occupancy_figure','physical_feature_distributions_figure','fold_state_figure','comparison_condition_preview_figure','cross_salt_family_profiles_figure','cross_salt_population_figure','cross_salt_metric_figure','cross_salt_comparison_archive']),
+    'plots.py': (_plots, ['trace_figure','distribution_figures','profile_figure','LABELS','scientific','figure_archive','profile_archive','cluster_pca_figure','member_profile_figure_hart','representative_time_examples','time_example_figure','pca_scree_figure','k_diagnostics_figure','feature_correlation_figure','cluster_pca_3d_figure','dendrogram_figure','hart_style_archive','blockade_dwell_figure','population_fraction_figure','level_composition_figure','occupancy_figure','physical_feature_distributions_figure','fold_state_figure','comparison_condition_preview_figure','cross_salt_family_profiles_figure','cross_salt_population_figure','cross_salt_metric_figure','cross_salt_heatmap_figure','cross_salt_comparison_archive']),
 }
 _missing = {filename:[name for name in names if not hasattr(module,name)] for filename,(module,names) in _REQUIRED.items()}
 _missing = {filename:names for filename,names in _missing.items() if names}
-_EXPECTED_RELEASE='0.9.0'
+_EXPECTED_RELEASE='0.9.1'
 _version_mismatch={filename:getattr(module,'RELEASE_VERSION',None) for filename,(module,_) in _REQUIRED.items() if getattr(module,'RELEASE_VERSION',None)!=_EXPECTED_RELEASE}
 if _missing or _version_mismatch:
     st.error('DNA Event Lab file-version mismatch: helper files are not all from release '+_EXPECTED_RELEASE+'.')
@@ -32,10 +32,10 @@ if _missing or _version_mismatch:
 from analysis import load_events,load_dataset,link_dataset,describe,refine,fit_metrics,cluster_features,feature_space_diagnostics,cluster_count_diagnostics,safe_settings,DATASET_FEATURE_NAMES,DATASET_FEATURE_DESCRIPTIONS,dataset_feature_name,dataset_feature_label,aligned_event_profiles,cluster_median_profiles
 from physical import level_features,PHYSICAL_DESCRIPTIONS
 from workflow import active_events,signal_events,fitting_bytes,match_raw,bundle,comparison_package
-from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure,fold_state_figure,comparison_condition_preview_figure,cross_salt_family_profiles_figure,cross_salt_population_figure,cross_salt_metric_figure,cross_salt_comparison_archive
+from plots import trace_figure,distribution_figures,profile_figure,LABELS,scientific,figure_archive,profile_archive,cluster_pca_figure,member_profile_figure_hart,representative_time_examples,time_example_figure,pca_scree_figure,k_diagnostics_figure,feature_correlation_figure,cluster_pca_3d_figure,dendrogram_figure,hart_style_archive,blockade_dwell_figure,population_fraction_figure,level_composition_figure,occupancy_figure,physical_feature_distributions_figure,fold_state_figure,comparison_condition_preview_figure,cross_salt_family_profiles_figure,cross_salt_population_figure,cross_salt_metric_figure,cross_salt_heatmap_figure,cross_salt_comparison_archive
 
 st.set_page_config(page_title='DNA Event Lab',page_icon='🧬',layout='wide')
-st.title('DNA Event Lab · v0.9.0')
+st.title('DNA Event Lab · v0.9.1')
 st.caption('Load → inspect → refine → plot → cluster → save → compare salts')
 st.sidebar.title('Your analysis')
 S=st.session_state
@@ -118,20 +118,25 @@ def _read_comparison_package(uploaded):
 def _cross_salt_stats(packages,mapping,reference_family=None):
     rows=[]
     blockade_candidates=['clustering_measured_mean_blockade_nA','mean_blockade_nA']
+    ecd_candidates=['clustering_ecd_nA_ms','ecd_nA_ms']
     for salt,pkg in packages.items():
-        table=pkg['assignments'];total=max(1,len(table));bcol=next((c for c in blockade_candidates if c in table),None)
+        table=pkg['assignments'];total=max(1,len(table));bcol=next((c for c in blockade_candidates if c in table),None);ecol=next((c for c in ecd_candidates if c in table),None)
         for cluster in sorted(table.cluster.astype(int).unique()):
             fam=mapping.get(salt,{}).get(int(cluster),'Unmapped')
             sub=table[table.cluster.astype(int)==int(cluster)]
             d=sub['duration_ms'].dropna().to_numpy(float) if 'duration_ms' in sub else np.array([])
             b=sub[bcol].dropna().to_numpy(float) if bcol else np.array([])
+            ecd=sub[ecol].dropna().to_numpy(float) if ecol else np.array([])
             row={'salt':salt,'cluster':int(cluster),'family':fam,'n':int(len(sub)),'population_pct':100.*len(sub)/total}
             row.update(median_dwell_ms=float(np.median(d)) if len(d) else np.nan,
                        q1_dwell_ms=float(np.quantile(d,.25)) if len(d) else np.nan,
                        q3_dwell_ms=float(np.quantile(d,.75)) if len(d) else np.nan,
                        median_blockade_nA=float(np.median(b)) if len(b) else np.nan,
                        q1_blockade_nA=float(np.quantile(b,.25)) if len(b) else np.nan,
-                       q3_blockade_nA=float(np.quantile(b,.75)) if len(b) else np.nan)
+                       q3_blockade_nA=float(np.quantile(b,.75)) if len(b) else np.nan,
+                       median_ecd_nA_ms=float(np.median(ecd)) if len(ecd) else np.nan,
+                       q1_ecd_nA_ms=float(np.quantile(ecd,.25)) if len(ecd) else np.nan,
+                       q3_ecd_nA_ms=float(np.quantile(ecd,.75)) if len(ecd) else np.nan)
             rows.append(row)
     stats=pd.DataFrame(rows)
     if reference_family and len(stats):
@@ -242,6 +247,7 @@ if step.startswith('7'):
     stats=_cross_salt_stats(packages,mapping,None if reference_family=='None' else reference_family)
     st.subheader('3 · Matched family summary')
     summary_cols=['salt','cluster','family','n','population_pct','median_dwell_ms','q1_dwell_ms','q3_dwell_ms','median_blockade_nA','q1_blockade_nA','q3_blockade_nA']
+    if 'median_ecd_nA_ms' in stats and np.isfinite(pd.to_numeric(stats['median_ecd_nA_ms'],errors='coerce')).any():summary_cols+=['median_ecd_nA_ms','q1_ecd_nA_ms','q3_ecd_nA_ms']
     if 'relative_blockade' in stats:summary_cols.append('relative_blockade')
     st.dataframe(stats[summary_cols].round(4),hide_index=True,width='stretch')
     st.download_button('Download cross-salt family summary CSV',stats.to_csv(index=False),'cross_salt_family_summary.csv','text/csv')
@@ -267,11 +273,30 @@ if step.startswith('7'):
         f.add_hline(y=1,line_dash='dot',line_color='gray');f.update_layout(height=400,title=f'Blockade relative to Family {reference_family} within each salt')
         show(f,'cross_salt_relative_blockade')
 
-    st.subheader('7 · Publication export')
-    st.caption('The export contains the matched-family profile grid, 100% population bars, family-resolved dwell/blockade trends, the family-summary CSV and the mapping JSON. Profile panels use the shared axes chosen above.')
-    export_signature=(tuple(sorted((s,pkg['name']) for s,pkg in packages.items())),json.dumps(mapping,sort_keys=True),x_mode,tuple(x_range),tuple(y_range),reference_family)
+    st.subheader('7 · Heatmap summary across salts')
+    st.caption('Heatmaps condense the family × electrolyte trends into one view. Raw mode preserves physical units. Row z-score is useful for seeing how each family changes across salts; column z-score is useful for comparing families within each salt. Z-scoring here changes only the display colours, never the clustering or stored values.')
+    heatmap_options=['Population fraction','Median dwell time','Median blockade']
+    if 'median_ecd_nA_ms' in stats and np.isfinite(pd.to_numeric(stats['median_ecd_nA_ms'],errors='coerce')).any():heatmap_options.append('Median ECD')
+    if reference_family!='None' and 'relative_blockade' in stats:heatmap_options.append('Relative blockade')
+    default_heatmaps=[x for x in ['Population fraction','Median dwell time','Median blockade'] if x in heatmap_options]
+    heatmap_metrics=st.multiselect('Heatmaps to show',heatmap_options,default=default_heatmaps,key='salt_heatmap_metrics')
+    heatmap_normalization=st.radio('Heatmap colour scaling',['Raw values','Row z-score (compare salts within each family)','Column z-score (compare families within each salt)'],index=0,key='salt_heatmap_normalization',horizontal=True)
+    heatmap_specs={
+        'Population fraction':('population_pct','Event-family population across salts','Population (%)','%',1),
+        'Median dwell time':('median_dwell_ms','Family-resolved dwell time across salts','Median dwell time (ms)',' ms',2),
+        'Median blockade':('median_blockade_nA','Family-resolved blockade across salts','Median mean blockade (nA)',' nA',2),
+        'Median ECD':('median_ecd_nA_ms','Family-resolved ECD across salts','Median ECD (nA·ms)',' nA·ms',2),
+        'Relative blockade':('relative_blockade',f'Blockade relative to Family {reference_family} across salts',f'Blockade / Family {reference_family}','',2),
+    }
+    for hm in heatmap_metrics:
+        metric,title,cbar,suffix,decimals=heatmap_specs[hm]
+        show(cross_salt_heatmap_figure(stats,metric,title,cbar,heatmap_normalization,suffix,decimals),'cross_salt_heatmap_'+metric)
+
+    st.subheader('8 · Publication export')
+    st.caption('The export contains the matched-family profile grid, 100% population bars, family-resolved dwell/blockade trends, the selected heatmaps, the family-summary CSV and the mapping JSON. Profile panels use the shared axes chosen above.')
+    export_signature=(tuple(sorted((s,pkg['name']) for s,pkg in packages.items())),json.dumps(mapping,sort_keys=True),x_mode,tuple(x_range),tuple(y_range),reference_family,tuple(heatmap_metrics),heatmap_normalization)
     if st.button('Prepare cross-salt publication figure pack',type='primary'):
-        S.cross_salt_export=(export_signature,cross_salt_comparison_archive(packages,mapping,stats,x_mode,x_range,y_range,None if reference_family=='None' else reference_family))
+        S.cross_salt_export=(export_signature,cross_salt_comparison_archive(packages,mapping,stats,x_mode,x_range,y_range,None if reference_family=='None' else reference_family,heatmap_metrics,heatmap_normalization))
     if S.get('cross_salt_export') and S.cross_salt_export[0]==export_signature:
         st.download_button('Save cross-salt figure pack',S.cross_salt_export[1],'cross_salt_DNA_families.zip','application/zip')
     navigation('bottom');st.stop()
@@ -284,7 +309,7 @@ measured['raw_event_index']=[p['rawmap'][e.index].index if e.index in p['rawmap'
 measured['dataset_row']=[p['mapping'].get(e.index,np.nan) for e in events]
 measured['fit_source']=['refined' if e.index in refs else 'uploaded' for e in events]
 refhash=hashlib.sha256(b''.join(str(i).encode()+r['fit'].tobytes() for i,r in sorted(refs.items()))).hexdigest()
-meta={'version':'0.9.0','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
+meta={'version':'0.9.1','source_hash':p['fingerprint'],'files':p['files'],'matching':p['matching'],'settings':safe_settings(p['settings']),
       'refinements':{str(i):{'method':r['method'],'parameters':r['parameters']} for i,r in refs.items()},
       'refinement_history':S.get('refinement_history',[]),'fit_hash':refhash}
 st.sidebar.metric('Loaded events',len(events));st.sidebar.metric('Refined fits',len(refs))

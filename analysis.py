@@ -1,5 +1,5 @@
 """Nanopore Shape Lab 0.4: explicit signal processing and lossless event subsets."""
-RELEASE_VERSION='0.9.0'
+RELEASE_VERSION='0.9.1'
 from dataclasses import dataclass
 import io, json, re, zipfile
 import numpy as np
@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 
-VERSION='0.9.0'
+VERSION='0.9.1'
 @dataclass
 class Event:
     index:int
@@ -155,7 +155,7 @@ def aligned_event_profiles(events,pre_samples=100,post_samples=100,alignment='st
     placed after ``pre_samples`` and the window extends through the longest event
     plus ``post_samples``.
 
-    ``alignment='midpoint'`` is the Hart-style display used by default in v0.9.0.
+    ``alignment='midpoint'`` is the Hart-style display used by default in v0.9.1.
     Every detected event midpoint is placed at the centre of a fixed-length sample
     window (``window_samples``).  No event is stretched or compressed, so dwell-time
     differences remain visible while baseline is shown before and after the event.

@@ -1,35 +1,33 @@
-# DNA Event Lab v0.9.0 — five-salt comparison
+# DNA Event Lab v0.9.1 — cross-salt heatmap summary
 
-This release keeps the v0.8.x dataset-feature clustering unchanged and adds a cross-salt comparison workflow.
+This release keeps the v0.9.0 clustering and five-salt comparison workflow unchanged and adds **family × electrolyte heatmaps** to Step 7.
 
-## Existing clustering
+## New in Step 7
 
-Step 5 still uses the original NanoSense dataset feature matrix: selected `X` columns → MinMax scaling to [-1,1] → PCA → Ward agglomerative or k-means. Resolved-level descriptors remain interpretation-only.
+After mapping recording-specific clusters to common Family A/B/C… labels, the app can now plot heatmaps for:
 
-## New Step 7 · Compare salts
+- population fraction (%)
+- median dwell time (ms)
+- median blockade (nA)
+- median ECD (nA·ms), when present in the comparison packages
+- relative blockade to a selected reference family, when enabled
 
-After clustering each recording, Step 6 can export a compact **salt-comparison package** containing:
+Heatmap colour scaling can be:
 
-- event-to-cluster assignments,
-- centered real-sample median profiles for every cluster,
-- cluster counts/populations,
-- median and IQR dwell times,
-- median and IQR mean blockade,
-- clustering/profile metadata.
+- **Raw values** — keeps the physical units and is the default for reporting.
+- **Row z-score** — standardises each family across salts, useful for highlighting salt-dependent changes within a family.
+- **Column z-score** — standardises each salt across families, useful for highlighting which families are relatively high/low within one electrolyte.
 
-Upload the LiCl, NaCl, KCl, RbCl and CsCl packages in Step 7. Cluster IDs are recording-specific, so the interface explicitly asks you to map each Cluster ID to a common Family A/B/C… label. The default suggestion follows the shallow-to-deep cluster ordering, but the user must confirm the physical correspondence.
+The z-score modes affect only the heatmap display. They never alter clustering, family matching, or the saved raw summary values. Hover text retains the raw physical value.
 
-Step 7 then creates:
+## Publication export
 
-1. matched-family median waveforms across salts,
-2. 100% stacked family-population bars,
-3. family-resolved median dwell time with event-level IQR,
-4. family-resolved median blockade with event-level IQR,
-5. optional blockade normalised to a user-selected reference family within each salt,
-6. a publication export pack with PDF/SVG/600 dpi PNG plus CSV/JSON.
+The cross-salt publication ZIP now includes individual heatmaps, a compact multi-heatmap summary (up to four selected metrics), and CSV matrices for both raw and displayed heatmap values, in addition to the existing waveform, population, dwell-time and blockade figures.
 
-PCA is **not pooled across salts** in this workflow. Separately fitted PCs are treated as within-recording diagnostics only.
+## Existing pipeline retained
 
-## Important statistical caution
+Primary clustering remains:
 
-The IQRs in Step 7 describe the spread of events within a recording; they are not replicate-level confidence intervals. If multiple independent pores/recordings are available per salt, inferential statistics should use those independent replicates rather than treating every translocation as an independent experimental replicate.
+`matched original dataset rows → selected NanoSense X columns → MinMax scaling to [-1,1] → PCA → Ward agglomerative OR k-means`
+
+Family correspondence across salts remains user-confirmed; Cluster 0 in one electrolyte is not automatically assumed homologous to Cluster 0 in another.
